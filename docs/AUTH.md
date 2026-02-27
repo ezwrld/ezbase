@@ -13,13 +13,7 @@ ezbase's philosophy: don't reimplement solved problems. Auth is solved. BetterAu
 
 ## What changes
 
-### Current auth (to be replaced)
-- `server/src/auth.ts` — hand-rolled signup/signin, bcrypt, JWT generation
-- `server/src/middleware.ts` — manual JWT verification, role extraction
-- `server/src/config.ts` — JWT_SECRET, admin key generation
-- SDK `AuthClient` class — calls custom `/api/auth/signup`, `/api/auth/signin`
-
-### New auth (BetterAuth)
+### Auth (BetterAuth — implemented)
 - BetterAuth handles all user management, sessions, OAuth callbacks
 - Mounts its routes at `/api/auth/*` inside the Hono app
 - ezbase middleware reads BetterAuth's session to get user identity

@@ -17,16 +17,18 @@ Detailed specs and plans live in `docs/`:
 | `docs/DISTRIBUTION.md` | Packaging, versioning, GitHub Actions, how to use ezbase in other projects |
 | `docs/AUTH.md` | BetterAuth integration details |
 | `docs/CI-CD.md` | GitHub Actions workflows (OIDC publishing, Docker builds) |
-| `docs/GUIDE.md` | Implementation guide for using ezbase in projects |
+| `docs/skill.md` | **Canonical SDK & integration reference** — the one file for building with ezbase |
+| `docs/ROADMAP.md` | Architecture decisions and roadmap |
 
 ## What's built
 
 - **Document CRUD** — create, read, update (full + partial), delete via REST
 - **Real-time** — SSE subscriptions at collection, document, and query level
 - **Query filtering** — `where`, `orderBy`, `order`, `limit`
+- **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), auto-created on first write
 - **Per-collection tables** — each collection gets its own `col_<name>` Postgres table with GIN indexes
-- **Auth** — BetterAuth (email/password, session tokens), per-collection permissions (public/authenticated/admin)
-- **Console** — React + Vite + Tailwind SPA with live-updating document tables
+- **Auth** — BetterAuth (email/password, session tokens), per-collection permissions (public/authenticated/admin), shared across databases
+- **Console** — React + Vite + Tailwind SPA with database selector and live-updating document tables
 - **SDK** — zero-dependency TypeScript client, works in Node/Bun/Deno/browsers
 - **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`
 - **Distribution setup** — Dockerfile (all-in-one image), GitHub Actions for npm + GHCR publishing
@@ -42,9 +44,10 @@ Monorepo: `server/`, `sdk/`, `console/`. Runs as a Docker Compose stack in devel
 | Component | Status |
 |-----------|--------|
 | **Runtime** | Bun + Hono |
-| **Storage** | Per-collection tables (`col_*`) with JSONB + GIN indexes |
+| **Storage** | Per-collection tables (`col_*`) in per-database schemas (`db_*`) with JSONB + GIN indexes |
+| **Databases** | Multiple databases per instance, each a Postgres schema, auto-created on first write |
 | **Pub/sub** | Postgres LISTEN/NOTIFY |
-| **Auth** | BetterAuth (sessions, email/password) |
+| **Auth** | BetterAuth (sessions, email/password) — shared across databases |
 | **Search** | Not built (plan: Meilisearch) |
 | **Files** | Not built (plan: filesystem + metadata in Postgres) |
 
@@ -78,28 +81,33 @@ Verify: `curl http://localhost:7003/api/health`
 
 ## API (all under `/api`)
 
+Legacy routes (`/api/collections/...`) target the `default` database. Named database routes use `/api/db/:database/collections/...`.
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| GET | `/collections` | List collection names |
-| POST | `/collections/:col` | Create document |
-| GET | `/collections/:col` | List/query documents |
-| GET | `/collections/:col/:id` | Get document |
-| PUT | `/collections/:col/:id` | Replace document (upsert) |
-| PATCH | `/collections/:col/:id` | Partial update |
-| DELETE | `/collections/:col/:id` | Delete document |
-| GET | `/collections/:col/sse` | SSE (collection/query level) |
-| GET | `/collections/:col/:id/sse` | SSE (document level) |
+| GET | `/databases` | List database names (public) |
+| DELETE | `/db/:database` | Delete database (admin, cannot delete `default`) |
+| GET | `/collections` | List collection names (default db) |
+| POST | `/collections/:col` | Create document (default db) |
+| GET | `/collections/:col` | List/query documents (default db) |
+| GET | `/collections/:col/:id` | Get document (default db) |
+| PUT | `/collections/:col/:id` | Replace document (upsert, default db) |
+| PATCH | `/collections/:col/:id` | Partial update (default db) |
+| DELETE | `/collections/:col/:id` | Delete document (default db) |
+| GET | `/collections/:col/sse` | SSE (collection/query, default db) |
+| GET | `/collections/:col/:id/sse` | SSE (document, default db) |
+| GET | `/collections/:col/permissions` | Get permission level (admin, default db) |
+| PUT | `/collections/:col/permissions` | Set permission level (admin, default db) |
+| * | `/db/:database/collections/...` | All collection routes for named database |
 | POST | `/auth/sign-up/email` | Register (BetterAuth) |
 | POST | `/auth/sign-in/email` | Login (BetterAuth) |
 | POST | `/auth/sign-out` | Logout (BetterAuth) |
 | GET | `/auth/me` | Current user |
-| GET | `/collections/:col/permissions` | Get permission level (admin) |
-| PUT | `/collections/:col/permissions` | Set permission level (admin) |
 
 ## Database
 
-Per-collection tables: `col_<name>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with GIN index on `data`. Auth managed by BetterAuth (`user`, `session`, `account`, `verification` tables). Collection permissions in `_ezbase_config`.
+Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with GIN index on `data`. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Collection permissions per database in `db_<name>._ezbase_config`.
 
 ## Releasing
 

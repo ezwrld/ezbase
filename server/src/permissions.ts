@@ -1,48 +1,67 @@
+import type { Context } from 'hono'
 import { Hono } from 'hono'
-import { sql } from './db.js'
+import { sql, ensureDatabase, qualifiedConfig } from './db.js'
 import { clearPermissionCache } from './middleware.js'
-
-const permissions = new Hono()
 
 const VALID_LEVELS = ['public', 'authenticated', 'admin']
 
-// ── GET /collections/:collection/permissions ────────────────
-permissions.get('/collections/:collection/permissions', async (c) => {
-  const role = c.get('role') || 'anonymous'
-  if (role !== 'admin') {
-    return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
-  }
+function permissionRoutes(getDatabase: (c: Context) => string) {
+  const app = new Hono()
 
-  const collection = c.req.param('collection')
-  const rows = await sql`
-    SELECT level FROM _ezbase_config WHERE collection = ${collection}
-  `
-  const level = rows.length > 0 ? (rows[0].level as string) : 'public'
-  return c.json({ collection, level })
-})
+  // ── GET /collections/:collection/permissions ────────────────
+  app.get('/collections/:collection/permissions', async (c) => {
+    const role = c.get('role') || 'anonymous'
+    if (role !== 'admin') {
+      return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
+    }
 
-// ── PUT /collections/:collection/permissions ────────────────
-permissions.put('/collections/:collection/permissions', async (c) => {
-  const role = c.get('role') || 'anonymous'
-  if (role !== 'admin') {
-    return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
-  }
+    const database = getDatabase(c)
+    const collection = c.req.param('collection')
+    await ensureDatabase(database)
 
-  const collection = c.req.param('collection')
-  const { level } = await c.req.json()
+    const configTable = qualifiedConfig(database)
+    const rows = await sql`
+      SELECT level FROM ${configTable} WHERE collection = ${collection}
+    `
+    const level = rows.length > 0 ? (rows[0].level as string) : 'public'
+    return c.json({ database, collection, level })
+  })
 
-  if (!VALID_LEVELS.includes(level)) {
-    return c.json({ error: `Invalid level. Must be one of: ${VALID_LEVELS.join(', ')}` }, 400)
-  }
+  // ── PUT /collections/:collection/permissions ────────────────
+  app.put('/collections/:collection/permissions', async (c) => {
+    const role = c.get('role') || 'anonymous'
+    if (role !== 'admin') {
+      return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
+    }
 
-  await sql`
-    INSERT INTO _ezbase_config (collection, level)
-    VALUES (${collection}, ${level})
-    ON CONFLICT (collection) DO UPDATE SET level = EXCLUDED.level
-  `
+    const database = getDatabase(c)
+    const collection = c.req.param('collection')
+    const { level } = await c.req.json()
 
-  clearPermissionCache(collection)
-  return c.json({ collection, level })
-})
+    if (!VALID_LEVELS.includes(level)) {
+      return c.json({ error: `Invalid level. Must be one of: ${VALID_LEVELS.join(', ')}` }, 400)
+    }
 
-export { permissions }
+    await ensureDatabase(database)
+
+    const configTable = qualifiedConfig(database)
+    await sql`
+      INSERT INTO ${configTable} (collection, level)
+      VALUES (${collection}, ${level})
+      ON CONFLICT (collection) DO UPDATE SET level = EXCLUDED.level
+    `
+
+    clearPermissionCache(`${database}:${collection}`)
+    return c.json({ database, collection, level })
+  })
+
+  return app
+}
+
+// Legacy routes (default database)
+const permissions = permissionRoutes(() => 'default')
+
+// Database-aware routes
+const dbPermissions = permissionRoutes((c) => c.req.param('database'))
+
+export { permissions, dbPermissions }

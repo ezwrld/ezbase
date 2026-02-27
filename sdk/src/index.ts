@@ -12,6 +12,7 @@ interface Document<T = Record<string, unknown>> {
 interface EzBaseOptions {
   url: string
   adminKey?: string
+  name?: string
 }
 
 interface AuthUser {
@@ -107,7 +108,7 @@ class AuthClient {
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(`ezbase: ${body.error || body.message || res.statusText}`)
+      throw new Error(`${this.ez['_errorPrefix']}: ${body.error || body.message || res.statusText}`)
     }
     const data = await res.json()
     this._token = data.session?.token || data.token
@@ -128,7 +129,7 @@ class AuthClient {
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(`ezbase: ${body.error || body.message || res.statusText}`)
+      throw new Error(`${this.ez['_errorPrefix']}: ${body.error || body.message || res.statusText}`)
     }
     const data = await res.json()
     this._token = data.session?.token || data.token
@@ -172,24 +173,106 @@ class AuthClient {
   }
 }
 
+// ── Database reference ────────────────────────────────────────
+class DatabaseRef {
+  constructor(
+    private ez: EzBase,
+    private name: string
+  ) {}
+
+  /** @internal — base path for API calls to this database */
+  _basePath(): string {
+    if (this.name === 'default') return `${this.ez._getUrl()}/api`
+    return `${this.ez._getUrl()}/api/db/${encodeURIComponent(this.name)}`
+  }
+
+  collection<T = Record<string, unknown>>(name: string): CollectionRef<T> {
+    return new CollectionRef<T>(this.ez, this, name)
+  }
+
+  async listCollections(): Promise<string[]> {
+    const res = await fetch(`${this._basePath()}/collections`, {
+      headers: this.ez._authHeaders(),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async getPermission(collection: string): Promise<{ database: string; collection: string; level: string }> {
+    const res = await fetch(
+      `${this._basePath()}/collections/${encodeURIComponent(collection)}/permissions`,
+      { headers: this.ez._authHeaders() }
+    )
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async setPermission(collection: string, level: string): Promise<{ database: string; collection: string; level: string }> {
+    const res = await fetch(
+      `${this._basePath()}/collections/${encodeURIComponent(collection)}/permissions`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+        body: JSON.stringify({ level }),
+      }
+    )
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+}
+
 // ── EzBase client ─────────────────────────────────────────────
 class EzBase {
   private url: string
   private adminKey?: string
+  private _name: string
+  private _defaultDb: DatabaseRef
   readonly auth: AuthClient
+
+  /** @internal */
+  get _errorPrefix(): string {
+    return `ezbase [${this._name}]`
+  }
 
   constructor(urlOrOpts: string | EzBaseOptions) {
     if (typeof urlOrOpts === 'string') {
       this.url = urlOrOpts.replace(/\/$/, '')
+      this._name = 'default'
     } else {
       this.url = urlOrOpts.url.replace(/\/$/, '')
       this.adminKey = urlOrOpts.adminKey
+      this._name = urlOrOpts.name || 'default'
     }
     this.auth = new AuthClient(this)
+    this._defaultDb = new DatabaseRef(this, 'default')
+  }
+
+  database(name: string): DatabaseRef {
+    return new DatabaseRef(this, name)
   }
 
   collection<T = Record<string, unknown>>(name: string): CollectionRef<T> {
-    return new CollectionRef<T>(this, name)
+    return this._defaultDb.collection<T>(name)
+  }
+
+  async listDatabases(): Promise<string[]> {
+    const res = await fetch(`${this.url}/api/databases`, {
+      headers: this._authHeaders(),
+    })
+    if (!res.ok) throw new Error(`${this._errorPrefix}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async listCollections(): Promise<string[]> {
+    return this._defaultDb.listCollections()
+  }
+
+  async getPermission(collection: string) {
+    return this._defaultDb.getPermission(collection)
+  }
+
+  async setPermission(collection: string, level: string) {
+    return this._defaultDb.setPermission(collection, level)
   }
 
   /** @internal */
@@ -216,44 +299,43 @@ class EzBase {
 class CollectionRef<T = Record<string, unknown>> {
   constructor(
     private ez: EzBase,
+    private db: DatabaseRef,
     private name: string
   ) {}
 
+  private _basePath(): string {
+    return `${this.db._basePath()}/collections/${encodeURIComponent(this.name)}`
+  }
+
   doc(id: string): DocRef<T> {
-    return new DocRef<T>(this.ez, this.name, id)
+    return new DocRef<T>(this.ez, this.db, this.name, id)
   }
 
   where(field: string, op: WhereOp, value: unknown): QueryRef<T> {
-    return new QueryRef<T>(this.ez, this.name).where(field, op, value)
+    return new QueryRef<T>(this.ez, this.db, this.name).where(field, op, value)
   }
 
   orderBy(field: string, direction?: OrderDir): QueryRef<T> {
-    return new QueryRef<T>(this.ez, this.name).orderBy(field, direction)
+    return new QueryRef<T>(this.ez, this.db, this.name).orderBy(field, direction)
   }
 
   limit(n: number): QueryRef<T> {
-    return new QueryRef<T>(this.ez, this.name).limit(n)
+    return new QueryRef<T>(this.ez, this.db, this.name).limit(n)
   }
 
   async add(data: Partial<T>): Promise<Document<T>> {
-    const res = await fetch(
-      `${this.ez._getUrl()}/api/collections/${encodeURIComponent(this.name)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
-        body: JSON.stringify(data),
-      }
-    )
-    if (!res.ok) throw new Error(`ezbase: ${res.status} ${await res.text()}`)
+    const res = await fetch(this._basePath(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
   }
 
   async get(): Promise<Document<T>[]> {
-    const res = await fetch(
-      `${this.ez._getUrl()}/api/collections/${encodeURIComponent(this.name)}`,
-      { headers: this.ez._authHeaders() }
-    )
-    if (!res.ok) throw new Error(`ezbase: ${res.status} ${await res.text()}`)
+    const res = await fetch(this._basePath(), { headers: this.ez._authHeaders() })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
   }
 
@@ -263,7 +345,7 @@ class CollectionRef<T = Record<string, unknown>> {
   ): () => void {
     const tp = this.ez._sseTokenParam()
     const sep = tp ? '?' : ''
-    const url = `${this.ez._getUrl()}/api/collections/${encodeURIComponent(this.name)}/sse${sep}${tp}`
+    const url = `${this._basePath()}/sse${sep}${tp}`
     return sseConnect(url, this.ez._authHeaders(), (data) => callback(JSON.parse(data)), onError)
   }
 }
@@ -272,18 +354,19 @@ class CollectionRef<T = Record<string, unknown>> {
 class DocRef<T = Record<string, unknown>> {
   constructor(
     private ez: EzBase,
+    private db: DatabaseRef,
     private collection: string,
     private id: string
   ) {}
 
   private path(): string {
-    return `${this.ez._getUrl()}/api/collections/${encodeURIComponent(this.collection)}/${encodeURIComponent(this.id)}`
+    return `${this.db._basePath()}/collections/${encodeURIComponent(this.collection)}/${encodeURIComponent(this.id)}`
   }
 
   async get(): Promise<Document<T> | null> {
     const res = await fetch(this.path(), { headers: this.ez._authHeaders() })
     if (res.status === 404) return null
-    if (!res.ok) throw new Error(`ezbase: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
   }
 
@@ -293,7 +376,7 @@ class DocRef<T = Record<string, unknown>> {
       headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
       body: JSON.stringify(data),
     })
-    if (!res.ok) throw new Error(`ezbase: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
   }
 
@@ -303,7 +386,7 @@ class DocRef<T = Record<string, unknown>> {
       headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
       body: JSON.stringify(data),
     })
-    if (!res.ok) throw new Error(`ezbase: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
   }
 
@@ -312,7 +395,7 @@ class DocRef<T = Record<string, unknown>> {
       method: 'DELETE',
       headers: this.ez._authHeaders(),
     })
-    if (!res.ok) throw new Error(`ezbase: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
   }
 
   onSnapshot(
@@ -335,6 +418,7 @@ class QueryRef<T = Record<string, unknown>> {
 
   constructor(
     private ez: EzBase,
+    private db: DatabaseRef,
     private collection: string
   ) {}
 
@@ -370,10 +454,14 @@ class QueryRef<T = Record<string, unknown>> {
     return qs ? '?' + qs : ''
   }
 
+  private _basePath(): string {
+    return `${this.db._basePath()}/collections/${encodeURIComponent(this.collection)}`
+  }
+
   async get(): Promise<Document<T>[]> {
-    const url = `${this.ez._getUrl()}/api/collections/${encodeURIComponent(this.collection)}${this.buildParams()}`
+    const url = `${this._basePath()}${this.buildParams()}`
     const res = await fetch(url, { headers: this.ez._authHeaders() })
-    if (!res.ok) throw new Error(`ezbase: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
   }
 
@@ -381,7 +469,7 @@ class QueryRef<T = Record<string, unknown>> {
     callback: (docs: Document<T>[]) => void,
     onError?: (err: Error) => void
   ): () => void {
-    const base = `${this.ez._getUrl()}/api/collections/${encodeURIComponent(this.collection)}/sse${this.buildParams()}`
+    const base = `${this._basePath()}/sse${this.buildParams()}`
     const tp = this.ez._sseTokenParam()
     const sep = base.includes('?') ? '&' : '?'
     const url = tp ? `${base}${sep}${tp}` : base
@@ -389,6 +477,6 @@ class QueryRef<T = Record<string, unknown>> {
   }
 }
 
-export { EzBase, CollectionRef, DocRef, QueryRef, AuthClient }
+export { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient }
 export type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser }
 export default EzBase

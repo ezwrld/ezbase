@@ -1,25 +1,28 @@
 # ezbase SDK — v0.1.0
 
+> **Full reference:** See [`docs/skill.md`](../docs/skill.md) for the complete SDK & integration guide (setup, auth patterns, permissions, REST API, common patterns).
+
 ezbase is a self-hosted document database with real-time subscriptions. This is the TypeScript client SDK. Zero dependencies, works in Node 18+, Bun, Deno, and browsers.
 
 ## Setup
 
-Copy `sdk/src/index.ts` from the ezbase repo into your project:
-
 ```bash
-cp path/to/ezbase/sdk/src/index.ts src/lib/ezbase.ts
+npm install @ezwrld/ezbase
 ```
 
 ## Connect
 
 ```ts
-import EzBase from '@/lib/ezbase'
+import { EzBase } from '@ezwrld/ezbase'
 
 // Basic — all collections default to public access
-const ez = new EzBase('http://localhost:7003')
+const ez = new EzBase({ url: 'http://localhost:7003' })
 
 // With admin key — full access to all collections + management APIs
 const ez = new EzBase({ url: 'http://localhost:7003', adminKey: 'your-admin-key' })
+
+// Optional name — shows in error messages for multi-environment setups
+const ez = new EzBase({ url: 'http://localhost:7003', name: 'production' })
 ```
 
 ## Documents
@@ -246,12 +249,42 @@ const doc = await todos.add({ title: 'Buy milk', done: false })
 // doc.data is typed as Todo
 ```
 
+## Multiple Databases
+
+One ezbase instance can have multiple databases. Each database is an isolated set of collections with shared auth.
+
+```ts
+// Default database (shorthand)
+await ez.collection('todos').add({ title: 'Ship it' })
+
+// Named databases
+const auburn = ez.database('auburn')
+await auburn.collection('orders').add({ customer: 'Alice', total: 250 })
+
+// Databases auto-create on first write, just like collections
+```
+
+### Admin Methods
+
+```ts
+const ez = new EzBase({ url: '...', adminKey: '...' })
+
+await ez.listDatabases()                                   // ['default', 'auburn']
+await ez.listCollections()                                 // default db collections
+await ez.database('auburn').listCollections()               // auburn's collections
+
+await ez.setPermission('todos', 'authenticated')            // default db
+await ez.database('auburn').setPermission('orders', 'admin')
+await ez.getPermission('todos')
+// → { database: 'default', collection: 'todos', level: 'authenticated' }
+```
+
 ## Exports
 
 ```ts
-import EzBase from '@/lib/ezbase'
+import { EzBase } from '@ezwrld/ezbase'
 // or
-import { EzBase, CollectionRef, DocRef, QueryRef, AuthClient } from '@/lib/ezbase'
+import { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient } from '@ezwrld/ezbase'
 // types
-import type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser } from '@/lib/ezbase'
+import type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser } from '@ezwrld/ezbase'
 ```

@@ -1,0 +1,28 @@
+# ezbase
+
+> Self-hosted document database. Firebase-level DX, zero vendor lock-in.
+
+ezbase is a single Docker image that wraps Postgres (JSONB, GIN indexes, LISTEN/NOTIFY), BetterAuth (email/password, sessions), and Hono behind a TypeScript SDK and REST API. You get schemaless documents, real-time SSE subscriptions, auth with per-collection permissions, and an admin console — no SQL, no migrations, no config.
+
+## SDK
+
+```bash
+npm install @ezwrld/ezbase
+```
+
+```typescript
+import { EzBase } from '@ezwrld/ezbase'
+const ez = new EzBase({ url: 'http://localhost:7003' })
+```
+
+## Full Reference
+
+The complete SDK reference, REST API docs, auth patterns, and integration guide:
+
+https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/skill.md
+
+## Links
+
+- GitHub: https://github.com/ezwrld/ezbase
+- npm: https://www.npmjs.com/package/@ezwrld/ezbase
+- Docker: ghcr.io/ezwrld/ezbase:latest

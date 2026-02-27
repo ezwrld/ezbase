@@ -4,6 +4,7 @@ export type ChangeEvent = {
   type: 'added' | 'modified' | 'removed'
   id: string
   collection: string
+  database: string
 }
 
 type Listener = (event: ChangeEvent) => void
@@ -13,7 +14,8 @@ const listeners = new Map<string, Set<Listener>>()
 export async function initPubSub() {
   await sql.listen('ezbase_changes', (payload) => {
     const event = JSON.parse(payload) as ChangeEvent
-    const set = listeners.get(event.collection)
+    const key = `${event.database}:${event.collection}`
+    const set = listeners.get(key)
     if (set) {
       for (const l of set) {
         try {
@@ -30,20 +32,22 @@ export async function publishChange(event: ChangeEvent) {
 }
 
 export async function subscribe(
+  database: string,
   collection: string,
   listener: Listener
 ): Promise<() => void> {
-  if (!listeners.has(collection)) {
-    listeners.set(collection, new Set())
+  const key = `${database}:${collection}`
+  if (!listeners.has(key)) {
+    listeners.set(key, new Set())
   }
-  listeners.get(collection)!.add(listener)
+  listeners.get(key)!.add(listener)
 
   return () => {
-    const set = listeners.get(collection)
+    const set = listeners.get(key)
     if (set) {
       set.delete(listener)
       if (set.size === 0) {
-        listeners.delete(collection)
+        listeners.delete(key)
       }
     }
   }

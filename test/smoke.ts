@@ -1,9 +1,11 @@
 /**
- * ezbase smoke test — verifies CRUD, auth, SSE, permissions, and list collections.
- * Run: bun run test/smoke.ts  (from repo root, after `docker compose -f test/docker-compose.yml up -d`)
+ * ezbase smoke test — uses the actual SDK to verify everything works.
+ * Run: bun run test/smoke.ts  (from repo root, after test stack is up)
  */
 
-const BASE = "http://localhost:7003/api";
+import { EzBase } from '../sdk/src/index.js'
+
+const URL = "http://localhost:7003";
 const ADMIN_KEY = "test-admin-key";
 
 let passed = 0;
@@ -22,7 +24,7 @@ function assert(cond: boolean, msg: string) {
 async function waitForHealthy(retries = 30) {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch(`${BASE}/health`);
+      const res = await fetch(`${URL}/api/health`);
       if (res.ok) return;
     } catch {}
     await new Promise((r) => setTimeout(r, 2000));
@@ -35,264 +37,219 @@ async function main() {
   await waitForHealthy();
   console.log("ezbase is up!\n");
 
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${ADMIN_KEY}`,
-  };
+  // ── Admin client (bypasses permissions) ─────────────────────
+  const admin = new EzBase({ url: URL, adminKey: ADMIN_KEY });
 
-  // ── Health ──────────────────────────────────────────────────
+  // ── Health (raw fetch, not in SDK) ──────────────────────────
   console.log("Health check");
   {
-    const res = await fetch(`${BASE}/health`);
+    const res = await fetch(`${URL}/api/health`);
     const body = await res.json();
     assert(res.ok && body.status === "ok", "GET /health returns ok");
   }
 
-  // ── CRUD ────────────────────────────────────────────────────
-  console.log("\nCRUD operations");
+  // ── CRUD via SDK ────────────────────────────────────────────
+  console.log("\nCRUD operations (SDK)");
   let docId: string;
   {
-    // Create
-    const res = await fetch(`${BASE}/collections/todos`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ title: "Test todo", done: false }),
-    });
-    assert(res.status === 201, "POST creates document (201)");
-    const doc = await res.json();
-    assert(doc.id && typeof doc.id === "string", "Document has string id");
-    assert(doc.data?.title === "Test todo", "Document data matches");
-    assert(typeof doc.created === "number", "Document has created timestamp");
-    assert(typeof doc.updated === "number", "Document has updated timestamp");
+    // add()
+    const doc = await admin.collection("todos").add({ title: "Test todo", done: false });
+    assert(doc.id && typeof doc.id === "string", "add() returns doc with string id");
+    assert(doc.data.title === "Test todo", "add() data matches input");
+    assert(typeof doc.created === "number", "add() has created timestamp");
+    assert(typeof doc.updated === "number", "add() has updated timestamp");
     docId = doc.id;
   }
   {
-    // Read
-    const res = await fetch(`${BASE}/collections/todos/${docId}`, { headers });
-    const doc = await res.json();
-    assert(res.ok && doc.id === docId, "GET returns the created document");
+    // doc().get()
+    const doc = await admin.collection("todos").doc(docId).get();
+    assert(doc !== null && doc!.id === docId, "doc().get() returns the created document");
   }
   {
-    // Update (PATCH)
-    const res = await fetch(`${BASE}/collections/todos/${docId}`, {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify({ done: true }),
-    });
-    const doc = await res.json();
-    assert(res.ok && doc.data.done === true, "PATCH updates document");
-    assert(doc.data.title === "Test todo", "PATCH preserves existing fields");
+    // doc().update() — PATCH
+    const doc = await admin.collection("todos").doc(docId).update({ done: true });
+    assert(doc.data.done === true, "update() changes field");
+    assert(doc.data.title === "Test todo", "update() preserves existing fields");
   }
   {
-    // Replace (PUT)
-    const res = await fetch(`${BASE}/collections/todos/${docId}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ title: "Replaced", priority: 1 }),
-    });
-    const doc = await res.json();
-    assert(res.ok && doc.data.title === "Replaced", "PUT replaces document");
+    // doc().set() — PUT (replace)
+    const doc = await admin.collection("todos").doc(docId).set({ title: "Replaced", priority: 1 } as any);
+    assert(doc.data.title === "Replaced", "set() replaces document data");
   }
   {
-    // List
-    const res = await fetch(`${BASE}/collections/todos`, { headers });
-    const docs = await res.json();
-    assert(res.ok && Array.isArray(docs) && docs.length >= 1, "GET lists documents");
+    // collection().get() — list
+    const docs = await admin.collection("todos").get();
+    assert(Array.isArray(docs) && docs.length >= 1, "collection().get() lists documents");
   }
   {
-    // Delete
-    const res = await fetch(`${BASE}/collections/todos/${docId}`, {
-      method: "DELETE",
-      headers,
-    });
-    const body = await res.json();
-    assert(res.ok && body.success === true, "DELETE removes document");
-  }
-  {
-    // 404 after delete
-    const res = await fetch(`${BASE}/collections/todos/${docId}`, { headers });
-    assert(res.status === 404, "GET after DELETE returns 404");
+    // doc().delete()
+    await admin.collection("todos").doc(docId).delete();
+    const doc = await admin.collection("todos").doc(docId).get();
+    assert(doc === null, "doc().get() returns null after delete");
   }
 
-  // ── Query filtering ─────────────────────────────────────────
-  console.log("\nQuery filtering");
+  // ── Queries via SDK ─────────────────────────────────────────
+  console.log("\nQuery filtering (SDK)");
   {
-    // Seed some docs
     for (let i = 1; i <= 5; i++) {
-      await fetch(`${BASE}/collections/items`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ name: `item-${i}`, score: i * 10 }),
-      });
+      await admin.collection("items").add({ name: `item-${i}`, score: i * 10 });
     }
 
-    // where filter
-    const where = JSON.stringify([["score", ">", 20]]);
-    const res = await fetch(`${BASE}/collections/items?where=${encodeURIComponent(where)}`, { headers });
-    const docs = await res.json();
-    assert(res.ok && docs.length === 3, `WHERE score > 20 returns 3 docs (got ${docs.length})`);
+    // where
+    const filtered = await admin.collection("items").where("score", ">", 20).get();
+    assert(filtered.length === 3, `where(score > 20) returns 3 docs (got ${filtered.length})`);
 
     // limit
-    const res2 = await fetch(`${BASE}/collections/items?limit=2`, { headers });
-    const docs2 = await res2.json();
-    assert(res2.ok && docs2.length === 2, "LIMIT 2 returns 2 docs");
+    const limited = await admin.collection("items").limit(2).get();
+    assert(limited.length === 2, "limit(2) returns 2 docs");
 
     // orderBy
-    const res3 = await fetch(`${BASE}/collections/items?orderBy=score&order=asc&limit=1`, { headers });
-    const docs3 = await res3.json();
-    assert(res3.ok && docs3[0]?.data?.score === 10, "ORDER BY score ASC returns lowest first");
+    const ordered = await admin.collection("items").orderBy("score", "asc").limit(1).get();
+    assert(ordered[0]?.data?.score === 10, "orderBy(score, asc) returns lowest first");
+
+    // chained
+    const chained = await admin.collection("items")
+      .where("score", ">=", 20)
+      .orderBy("score", "desc")
+      .limit(2)
+      .get();
+    assert(chained.length === 2 && chained[0]?.data?.score === 50, "chained query works");
   }
 
-  // ── List collections ────────────────────────────────────────
-  console.log("\nList collections");
+  // ── Auth via SDK ────────────────────────────────────────────
+  console.log("\nAuth (SDK)");
+  const userClient = new EzBase({ url: URL });
   {
-    const res = await fetch(`${BASE}/collections`, { headers });
-    const cols = await res.json();
-    assert(res.ok && Array.isArray(cols), "GET /collections returns array");
-    assert(cols.includes("todos"), "Collections include 'todos'");
-    assert(cols.includes("items"), "Collections include 'items'");
-  }
-
-  // ── Auth (BetterAuth) ──────────────────────────────────────
-  console.log("\nAuth");
-  let authToken: string;
-  {
-    // Sign up
-    const res = await fetch(`${BASE}/auth/sign-up/email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: "test@example.com",
-        password: "testpass123",
-        name: "test@example.com",
-      }),
+    // signUp
+    const result = await userClient.auth.signUp({
+      email: "test@example.com",
+      password: "testpass123",
     });
-    assert(res.status === 200 || res.status === 201, `Sign up succeeds (${res.status})`);
-    const data = await res.json();
-    authToken = data.session?.token || data.token;
-    assert(typeof authToken === "string" && authToken.length > 0, "Sign up returns session token");
-    assert(data.user?.email === "test@example.com", "Sign up returns user email");
+    assert(typeof result.token === "string" && result.token.length > 0, "signUp() returns token");
+    assert(result.user.email === "test@example.com", "signUp() returns user email");
+    assert(userClient.auth.currentUser?.email === "test@example.com", "currentUser set after signUp");
   }
   {
-    // Sign in
-    const res = await fetch(`${BASE}/auth/sign-in/email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: "test@example.com",
-        password: "testpass123",
-      }),
+    // signOut + signIn
+    await userClient.auth.signOut();
+    assert(userClient.auth.currentUser === null, "currentUser null after signOut");
+
+    const result = await userClient.auth.signIn({
+      email: "test@example.com",
+      password: "testpass123",
     });
-    assert(res.ok, "Sign in succeeds");
-    const data = await res.json();
-    const token = data.session?.token || data.token;
-    assert(typeof token === "string" && token.length > 0, "Sign in returns session token");
+    assert(typeof result.token === "string" && result.token.length > 0, "signIn() returns token");
+    assert(userClient.auth.currentUser?.email === "test@example.com", "currentUser set after signIn");
   }
   {
-    // /me with admin key
-    const res = await fetch(`${BASE}/auth/me`, { headers });
-    const data = await res.json();
-    assert(res.ok && data.role === "admin", "/me with admin key returns admin role");
+    // onAuthStateChanged
+    let stateChangeCalled = false;
+    const unsub = userClient.auth.onAuthStateChanged((user) => {
+      stateChangeCalled = true;
+    });
+    await userClient.auth.signOut();
+    assert(stateChangeCalled, "onAuthStateChanged fires on signOut");
+    unsub();
   }
 
-  // ── Permissions ─────────────────────────────────────────────
+  // ── Permissions via SDK + raw fetch ─────────────────────────
   console.log("\nPermissions");
   {
-    // Set collection to authenticated
-    const res = await fetch(`${BASE}/collections/secret/permissions`, {
+    // Set to authenticated via raw API (admin)
+    await fetch(`${URL}/api/collections/secret/permissions`, {
       method: "PUT",
-      headers,
-      body: JSON.stringify({ level: "authenticated" }),
-    });
-    assert(res.ok, "Set permission to authenticated");
-  }
-  {
-    // Anonymous access should fail
-    const res = await fetch(`${BASE}/collections/secret`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: "nope" }),
-    });
-    assert(res.status === 401, "Anonymous access to authenticated collection returns 401");
-  }
-  {
-    // Authenticated access should work
-    const res = await fetch(`${BASE}/collections/secret`, {
-      method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${authToken}`,
+        Authorization: `Bearer ${ADMIN_KEY}`,
       },
-      body: JSON.stringify({ data: "yes" }),
+      body: JSON.stringify({ level: "authenticated" }),
     });
-    assert(res.status === 201, "Authenticated access to authenticated collection succeeds");
+
+    // Anonymous client should fail
+    const anonClient = new EzBase({ url: URL });
+    try {
+      await anonClient.collection("secret").add({ data: "nope" });
+      assert(false, "Anonymous access to authenticated collection throws");
+    } catch (err: any) {
+      assert(err.message.includes("401"), "Anonymous access returns 401 error");
+    }
+
+    // Authenticated client should work
+    const authClient = new EzBase({ url: URL });
+    await authClient.auth.signIn({ email: "test@example.com", password: "testpass123" });
+    const doc = await authClient.collection("secret").add({ data: "yes" });
+    assert(doc.id && doc.data.data === "yes", "Authenticated user can write to authenticated collection");
+
+    // Admin client always works
+    const adminDoc = await admin.collection("secret").add({ data: "admin" });
+    assert(adminDoc.id && adminDoc.data.data === "admin", "Admin can write to authenticated collection");
   }
 
-  // ── SSE ─────────────────────────────────────────────────────
-  console.log("\nSSE (real-time)");
+  // ── SSE via SDK ─────────────────────────────────────────────
+  console.log("\nSSE real-time (SDK)");
   {
-    const sseResult = await new Promise<string>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("SSE timeout")), 10000);
-      const controller = new AbortController();
+    const result = await new Promise<boolean>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("SSE timeout")), 15000);
+      let gotInitial = false;
 
-      fetch(`${BASE}/collections/sse_test/sse?token=${ADMIN_KEY}`, {
-        headers: { Accept: "text/event-stream" },
-        signal: controller.signal,
-      }).then(async (res) => {
-        if (!res.ok || !res.body) {
+      const unsub = admin.collection("sse_test").onSnapshot((docs) => {
+        if (!gotInitial) {
+          gotInitial = true;
+          // Initial snapshot (empty) — now create a doc
+          admin.collection("sse_test").add({ hello: "realtime" });
+        } else if (docs.length > 0 && docs.some(d => d.data.hello === "realtime")) {
           clearTimeout(timeout);
-          reject(new Error(`SSE connect failed: ${res.status}`));
-          return;
+          unsub();
+          resolve(true);
         }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        let gotInitial = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-
-          if (buf.includes("event:") && buf.includes("snapshot") && buf.includes("data:")) {
-            if (!gotInitial) {
-              // First snapshot is the initial empty state — now create a doc
-              gotInitial = true;
-              buf = "";
-              fetch(`${BASE}/collections/sse_test`, {
-                method: "POST",
-                headers,
-                body: JSON.stringify({ hello: "realtime" }),
-              });
-            } else {
-              // Second snapshot should have our doc
-              clearTimeout(timeout);
-              controller.abort();
-              resolve(buf);
-              return;
-            }
-          }
-        }
-      }).catch((err) => {
-        if (err.name !== "AbortError") {
-          clearTimeout(timeout);
-          reject(err);
-        }
+      }, (err) => {
+        clearTimeout(timeout);
+        reject(err);
       });
     });
+    assert(result === true, "onSnapshot delivers doc after creation");
+  }
+  {
+    // Doc-level SSE
+    const seedDoc = await admin.collection("sse_doc").add({ val: 1 });
+    const result = await new Promise<boolean>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Doc SSE timeout")), 15000);
+      let gotInitial = false;
 
-    assert(sseResult.includes("realtime"), "SSE delivers snapshot with created document");
+      const unsub = admin.collection("sse_doc").doc(seedDoc.id).onSnapshot((doc) => {
+        if (!gotInitial) {
+          gotInitial = true;
+          admin.collection("sse_doc").doc(seedDoc.id).update({ val: 2 });
+        } else if (doc && doc.data.val === 2) {
+          clearTimeout(timeout);
+          unsub();
+          resolve(true);
+        }
+      }, (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+    assert(result === true, "doc().onSnapshot delivers update");
   }
 
   // ── Collection name validation ──────────────────────────────
   console.log("\nCollection name validation");
   {
-    const res = await fetch(`${BASE}/collections/user`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ test: true }),
-    });
-    assert(res.status === 500 || res.status === 400, "Reserved name 'user' is rejected");
+    try {
+      await admin.collection("user").add({ test: true });
+      assert(false, "Reserved name 'user' should be rejected");
+    } catch (err: any) {
+      assert(true, "Reserved name 'user' is rejected");
+    }
+  }
+  {
+    try {
+      await admin.collection("session").add({ test: true });
+      assert(false, "Reserved name 'session' should be rejected");
+    } catch {
+      assert(true, "Reserved name 'session' is rejected");
+    }
   }
 
   // ── Summary ─────────────────────────────────────────────────

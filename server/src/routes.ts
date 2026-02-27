@@ -1,17 +1,10 @@
+import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { sql, ensureCollection } from './db.js'
+import { sql, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
 import { generateId } from './id.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { requirePermission } from './middleware.js'
-
-const api = new Hono()
-
-api.get('/health', (c) => c.json({ status: 'ok' }))
-
-// ── Permission middleware for collection routes ─────────────
-api.use('/collections/:collection', requirePermission('access'))
-api.use('/collections/:collection/*', requirePermission('access'))
 
 // ── Helpers ───────────────────────────────────────────────────
 function formatDoc(row: Record<string, unknown>) {
@@ -43,13 +36,14 @@ function sanitizeField(field: string): string {
 }
 
 function buildQuery(
+  database: string,
   collection: string,
   whereParam?: string,
   orderBy?: string,
   order?: string,
   limitParam?: string
 ) {
-  let query = `SELECT * FROM col_${collection} WHERE true`
+  let query = `SELECT * FROM db_${database}.col_${collection} WHERE true`
   const params: unknown[] = []
 
   if (whereParam) {
@@ -97,196 +91,267 @@ function buildQuery(
   return { query, params }
 }
 
-// ── SSE: document-level subscription ──────────────────────────
-api.get('/collections/:collection/:id/sse', async (c) => {
-  const { collection, id } = c.req.param()
-  await ensureCollection(collection)
-  const table = sql(`col_${collection}`)
+// ── Collection routes factory ────────────────────────────────
+function collectionRoutes(getDatabase: (c: Context) => string) {
+  const app = new Hono()
 
-  return streamSSE(c, async (stream) => {
-    const sendSnapshot = async () => {
-      const rows = await sql`
-        SELECT * FROM ${table} WHERE id = ${id}
-      `
-      const doc = rows.length > 0 ? formatDoc(rows[0]) : null
-      await stream.writeSSE({ event: 'snapshot', data: JSON.stringify(doc) })
-    }
+  const perm = requirePermission(getDatabase)
 
-    await sendSnapshot()
+  // Permission middleware for collection routes
+  app.use('/collections/:collection', perm('access'))
+  app.use('/collections/:collection/*', perm('access'))
 
-    const unsub = await subscribe(collection, async (event) => {
-      if (event.id !== id) return
-      try {
-        await sendSnapshot()
-      } catch {}
-    })
+  // ── SSE: document-level subscription ──────────────────────────
+  app.get('/collections/:collection/:id/sse', async (c) => {
+    const collection = c.req.param('collection')
+    const id = c.req.param('id')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+    const table = qualifiedTable(database, collection)
 
-    stream.onAbort(() => unsub())
-    // keep-alive
-    while (true) await stream.sleep(30000)
-  })
-})
+    return streamSSE(c, async (stream) => {
+      const sendSnapshot = async () => {
+        const rows = await sql`
+          SELECT * FROM ${table} WHERE id = ${id}
+        `
+        const doc = rows.length > 0 ? formatDoc(rows[0]) : null
+        await stream.writeSSE({ event: 'snapshot', data: JSON.stringify(doc) })
+      }
 
-// ── SSE: collection / query subscription ──────────────────────
-api.get('/collections/:collection/sse', async (c) => {
-  const collection = c.req.param('collection')
-  await ensureCollection(collection)
+      await sendSnapshot()
 
-  const whereParam = c.req.query('where')
-  const orderBy = c.req.query('orderBy')
-  const order = c.req.query('order')
-  const limitParam = c.req.query('limit')
-
-  return streamSSE(c, async (stream) => {
-    const sendSnapshot = async () => {
-      const { query, params } = buildQuery(
-        collection,
-        whereParam,
-        orderBy,
-        order,
-        limitParam
-      )
-      const rows = await sql.unsafe(query, params as any[])
-      await stream.writeSSE({
-        event: 'snapshot',
-        data: JSON.stringify(rows.map(formatDoc)),
+      const unsub = await subscribe(database, collection, async (event) => {
+        if (event.id !== id) return
+        try {
+          await sendSnapshot()
+        } catch {}
       })
+
+      stream.onAbort(() => unsub())
+      // keep-alive
+      while (true) await stream.sleep(30000)
+    })
+  })
+
+  // ── SSE: collection / query subscription ──────────────────────
+  app.get('/collections/:collection/sse', async (c) => {
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+
+    const whereParam = c.req.query('where')
+    const orderBy = c.req.query('orderBy')
+    const order = c.req.query('order')
+    const limitParam = c.req.query('limit')
+
+    return streamSSE(c, async (stream) => {
+      const sendSnapshot = async () => {
+        const { query, params } = buildQuery(
+          database,
+          collection,
+          whereParam,
+          orderBy,
+          order,
+          limitParam
+        )
+        const rows = await sql.unsafe(query, params as any[])
+        await stream.writeSSE({
+          event: 'snapshot',
+          data: JSON.stringify(rows.map(formatDoc)),
+        })
+      }
+
+      await sendSnapshot()
+
+      const unsub = await subscribe(database, collection, async () => {
+        try {
+          await sendSnapshot()
+        } catch {}
+      })
+
+      stream.onAbort(() => unsub())
+      while (true) await stream.sleep(30000)
+    })
+  })
+
+  // ── List collections ─────────────────────────────────────────
+  app.get('/collections', async (c) => {
+    const database = getDatabase(c)
+    const schema = `db_${database}`
+    const rows = await sql`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = ${schema} AND table_name LIKE 'col_%'
+      ORDER BY table_name
+    `
+    return c.json(rows.map((r) => (r.table_name as string).slice(4)))
+  })
+
+  // ── CRUD ──────────────────────────────────────────────────────
+  app.post('/collections/:collection', async (c) => {
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+    const table = qualifiedTable(database, collection)
+
+    const body = await c.req.json()
+    const id = generateId()
+    const now = Date.now()
+
+    const rows = await sql`
+      INSERT INTO ${table} (id, data, created_at, updated_at)
+      VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
+      RETURNING *
+    `
+
+    const doc = formatDoc(rows[0])
+    await publishChange({ type: 'added', id: doc.id, collection, database })
+    return c.json(doc, 201)
+  })
+
+  app.get('/collections/:collection', async (c) => {
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+
+    const { query, params } = buildQuery(
+      database,
+      collection,
+      c.req.query('where'),
+      c.req.query('orderBy'),
+      c.req.query('order'),
+      c.req.query('limit')
+    )
+    const rows = await sql.unsafe(query, params as any[])
+    return c.json(rows.map(formatDoc))
+  })
+
+  app.get('/collections/:collection/:id', async (c) => {
+    const collection = c.req.param('collection')
+    const id = c.req.param('id')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+    const table = qualifiedTable(database, collection)
+
+    const rows = await sql`
+      SELECT * FROM ${table} WHERE id = ${id}
+    `
+    if (rows.length === 0) {
+      return c.json({ error: 'Document not found' }, 404)
+    }
+    return c.json(formatDoc(rows[0]))
+  })
+
+  app.put('/collections/:collection/:id', async (c) => {
+    const collection = c.req.param('collection')
+    const id = c.req.param('id')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+    const table = qualifiedTable(database, collection)
+
+    const body = await c.req.json()
+    const now = Date.now()
+
+    const rows = await sql`
+      INSERT INTO ${table} (id, data, created_at, updated_at)
+      VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
+      ON CONFLICT (id)
+      DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
+      RETURNING *, (xmax = 0) AS is_new
+    `
+
+    const doc = formatDoc(rows[0])
+    const type = rows[0].is_new ? 'added' : 'modified'
+    await publishChange({ type, id: doc.id, collection, database })
+    return c.json(doc)
+  })
+
+  app.patch('/collections/:collection/:id', async (c) => {
+    const collection = c.req.param('collection')
+    const id = c.req.param('id')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+    const table = qualifiedTable(database, collection)
+
+    const body = await c.req.json()
+    const now = Date.now()
+
+    const rows = await sql`
+      UPDATE ${table} SET data = data || ${sql.json(body)}, updated_at = ${now}
+      WHERE id = ${id}
+      RETURNING *
+    `
+
+    if (rows.length === 0) {
+      return c.json({ error: 'Document not found' }, 404)
     }
 
-    await sendSnapshot()
-
-    const unsub = await subscribe(collection, async () => {
-      try {
-        await sendSnapshot()
-      } catch {}
-    })
-
-    stream.onAbort(() => unsub())
-    while (true) await stream.sleep(30000)
+    const doc = formatDoc(rows[0])
+    await publishChange({ type: 'modified', id: doc.id, collection, database })
+    return c.json(doc)
   })
-})
 
-// ── List collections ─────────────────────────────────────────
-api.get('/collections', async (c) => {
+  app.delete('/collections/:collection/:id', async (c) => {
+    const collection = c.req.param('collection')
+    const id = c.req.param('id')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+    const table = qualifiedTable(database, collection)
+
+    const rows = await sql`
+      DELETE FROM ${table} WHERE id = ${id}
+      RETURNING *
+    `
+
+    if (rows.length === 0) {
+      return c.json({ error: 'Document not found' }, 404)
+    }
+
+    await publishChange({ type: 'removed', id: rows[0].id as string, collection, database })
+    return c.json({ success: true })
+  })
+
+  return app
+}
+
+// ── Admin routes (database management) ──────────────────────
+const adminRoutes = new Hono()
+
+adminRoutes.get('/health', (c) => c.json({ status: 'ok' }))
+
+// List databases — public (console needs it without auth)
+adminRoutes.get('/databases', async (c) => {
   const rows = await sql`
-    SELECT table_name FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name LIKE 'col_%'
-    ORDER BY table_name
+    SELECT schema_name FROM information_schema.schemata
+    WHERE schema_name LIKE 'db_%'
+    ORDER BY schema_name
   `
-  return c.json(rows.map((r) => (r.table_name as string).slice(4)))
+  return c.json(rows.map((r) => (r.schema_name as string).slice(3)))
 })
 
-// ── CRUD ──────────────────────────────────────────────────────
-api.post('/collections/:collection', async (c) => {
-  const collection = c.req.param('collection')
-  await ensureCollection(collection)
-  const table = sql(`col_${collection}`)
-
-  const body = await c.req.json()
-  const id = generateId()
-  const now = Date.now()
-
-  const rows = await sql`
-    INSERT INTO ${table} (id, data, created_at, updated_at)
-    VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
-    RETURNING *
-  `
-
-  const doc = formatDoc(rows[0])
-  await publishChange({ type: 'added', id: doc.id, collection })
-  return c.json(doc, 201)
-})
-
-api.get('/collections/:collection', async (c) => {
-  const collection = c.req.param('collection')
-  await ensureCollection(collection)
-
-  const { query, params } = buildQuery(
-    collection,
-    c.req.query('where'),
-    c.req.query('orderBy'),
-    c.req.query('order'),
-    c.req.query('limit')
-  )
-  const rows = await sql.unsafe(query, params as any[])
-  return c.json(rows.map(formatDoc))
-})
-
-api.get('/collections/:collection/:id', async (c) => {
-  const { collection, id } = c.req.param()
-  await ensureCollection(collection)
-  const table = sql(`col_${collection}`)
-
-  const rows = await sql`
-    SELECT * FROM ${table} WHERE id = ${id}
-  `
-  if (rows.length === 0) {
-    return c.json({ error: 'Document not found' }, 404)
-  }
-  return c.json(formatDoc(rows[0]))
-})
-
-api.put('/collections/:collection/:id', async (c) => {
-  const { collection, id } = c.req.param()
-  await ensureCollection(collection)
-  const table = sql(`col_${collection}`)
-
-  const body = await c.req.json()
-  const now = Date.now()
-
-  const rows = await sql`
-    INSERT INTO ${table} (id, data, created_at, updated_at)
-    VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
-    ON CONFLICT (id)
-    DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
-    RETURNING *, (xmax = 0) AS is_new
-  `
-
-  const doc = formatDoc(rows[0])
-  const type = rows[0].is_new ? 'added' : 'modified'
-  await publishChange({ type, id: doc.id, collection })
-  return c.json(doc)
-})
-
-api.patch('/collections/:collection/:id', async (c) => {
-  const { collection, id } = c.req.param()
-  await ensureCollection(collection)
-  const table = sql(`col_${collection}`)
-
-  const body = await c.req.json()
-  const now = Date.now()
-
-  const rows = await sql`
-    UPDATE ${table} SET data = data || ${sql.json(body)}, updated_at = ${now}
-    WHERE id = ${id}
-    RETURNING *
-  `
-
-  if (rows.length === 0) {
-    return c.json({ error: 'Document not found' }, 404)
+// Delete database — admin only
+adminRoutes.delete('/db/:database', async (c) => {
+  const role = c.get('role') || 'anonymous'
+  if (role !== 'admin') {
+    return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
   }
 
-  const doc = formatDoc(rows[0])
-  await publishChange({ type: 'modified', id: doc.id, collection })
-  return c.json(doc)
-})
+  const database = c.req.param('database')
 
-api.delete('/collections/:collection/:id', async (c) => {
-  const { collection, id } = c.req.param()
-  await ensureCollection(collection)
-  const table = sql(`col_${collection}`)
-
-  const rows = await sql`
-    DELETE FROM ${table} WHERE id = ${id}
-    RETURNING *
-  `
-
-  if (rows.length === 0) {
-    return c.json({ error: 'Document not found' }, 404)
+  if (database === 'default') {
+    return c.json({ error: 'Cannot delete the default database' }, 400)
   }
 
-  await publishChange({ type: 'removed', id: rows[0].id as string, collection })
+  const schema = sql(`db_${database}`)
+  await sql`DROP SCHEMA IF EXISTS ${schema} CASCADE`
+  clearDatabaseCaches(database)
+
   return c.json({ success: true })
 })
 
-export { api }
+// Legacy routes (default database)
+const legacyRoutes = collectionRoutes(() => 'default')
+
+// Database-aware routes
+const dbRoutes = collectionRoutes((c) => c.req.param('database'))
+
+export { legacyRoutes, dbRoutes, adminRoutes }

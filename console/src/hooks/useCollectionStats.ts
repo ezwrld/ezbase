@@ -6,32 +6,25 @@ export interface CollectionStats {
   size: number // approximate bytes (JSON-encoded data)
 }
 
-export function useCollectionStats(collections: string[]) {
+export function useCollectionStats(database: string, collections: string[]) {
   const [stats, setStats] = useState<Map<string, CollectionStats>>(new Map())
   const sourcesRef = useRef<Map<string, EventSource>>(new Map())
 
+  const basePath = database === 'default' ? '/api' : `/api/db/${encodeURIComponent(database)}`
+
   useEffect(() => {
     const sources = sourcesRef.current
-    const currentNames = new Set(collections)
 
-    // Close SSE for removed collections
-    for (const [name, es] of sources) {
-      if (!currentNames.has(name)) {
-        es.close()
-        sources.delete(name)
-        setStats((prev) => {
-          const next = new Map(prev)
-          next.delete(name)
-          return next
-        })
-      }
+    // Close all existing SSE connections on database or collections change
+    for (const es of sources.values()) {
+      es.close()
     }
+    sources.clear()
+    setStats(new Map())
 
-    // Open SSE for new collections
+    // Open SSE for each collection
     for (const name of collections) {
-      if (sources.has(name)) continue
-
-      const url = `/api/collections/${encodeURIComponent(name)}/sse`
+      const url = `${basePath}/collections/${encodeURIComponent(name)}/sse`
       const es = new EventSource(url)
       sources.set(name, es)
 
@@ -60,7 +53,7 @@ export function useCollectionStats(collections: string[]) {
       }
       sources.clear()
     }
-  }, [collections.join(',')])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [basePath, collections.join(',')])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return Array.from(stats.values())
 }

@@ -1,29 +1,31 @@
 import type { Context, Next } from 'hono'
 import { getAdminKey } from './config.js'
 import { ba } from './auth.js'
-import { sql } from './db.js'
+import { sql, qualifiedConfig } from './db.js'
 
 // ── Cache for permission levels ─────────────────────────────
 const permissionCache = new Map<string, { level: string; expires: number }>()
 const CACHE_TTL = 30_000
 
-export function clearPermissionCache(collection?: string) {
-  if (collection) {
-    permissionCache.delete(collection)
+export function clearPermissionCache(key?: string) {
+  if (key) {
+    permissionCache.delete(key)
   } else {
     permissionCache.clear()
   }
 }
 
-async function getPermissionLevel(collection: string): Promise<string> {
-  const cached = permissionCache.get(collection)
+async function getPermissionLevel(database: string, collection: string): Promise<string> {
+  const cacheKey = `${database}:${collection}`
+  const cached = permissionCache.get(cacheKey)
   if (cached && cached.expires > Date.now()) return cached.level
 
+  const configTable = qualifiedConfig(database)
   const rows = await sql`
-    SELECT level FROM _ezbase_config WHERE collection = ${collection}
+    SELECT level FROM ${configTable} WHERE collection = ${collection}
   `
   const level = rows.length > 0 ? (rows[0].level as string) : 'public'
-  permissionCache.set(collection, { level, expires: Date.now() + CACHE_TTL })
+  permissionCache.set(cacheKey, { level, expires: Date.now() + CACHE_TTL })
   return level
 }
 
@@ -65,39 +67,42 @@ export async function extractAuth(c: Context, next: Next) {
 }
 
 // ── requirePermission — applied to collection routes ────────
-export function requirePermission(action: string) {
-  return async (c: Context, next: Next) => {
-    const role = c.get('role') || 'anonymous'
+export function requirePermission(getDatabase: (c: Context) => string) {
+  return (action: string) => {
+    return async (c: Context, next: Next) => {
+      const role = c.get('role') || 'anonymous'
 
-    // Admin always passes
-    if (role === 'admin') return next()
+      // Admin always passes
+      if (role === 'admin') return next()
 
-    // Extract collection name from path
-    const collection = c.req.param('collection')
-    if (!collection) return next()
+      // Extract collection name from path
+      const collection = c.req.param('collection')
+      if (!collection) return next()
 
-    // Protect internal tables
-    if (collection.startsWith('_ezbase_')) {
-      if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-
-    const level = await getPermissionLevel(collection)
-
-    if (level === 'public') return next()
-
-    if (level === 'authenticated') {
-      if (role === 'anonymous') {
-        return c.json({ error: 'Unauthorized' }, 401)
+      // Protect internal tables
+      if (collection.startsWith('_ezbase_')) {
+        if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
+        return c.json({ error: 'Forbidden' }, 403)
       }
+
+      const database = getDatabase(c)
+      const level = await getPermissionLevel(database, collection)
+
+      if (level === 'public') return next()
+
+      if (level === 'authenticated') {
+        if (role === 'anonymous') {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        return next()
+      }
+
+      if (level === 'admin') {
+        if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
+        return c.json({ error: 'Forbidden' }, 403)
+      }
+
       return next()
     }
-
-    if (level === 'admin') {
-      if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-
-    return next()
   }
 }

@@ -7,10 +7,12 @@ export interface EzDocument {
   updated: number
 }
 
-export function useDocuments(collection: string | null) {
+export function useDocuments(database: string, collection: string | null) {
   const [documents, setDocuments] = useState<EzDocument[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const basePath = database === 'default' ? '/api' : `/api/db/${encodeURIComponent(database)}`
 
   useEffect(() => {
     if (!collection) {
@@ -23,7 +25,7 @@ export function useDocuments(collection: string | null) {
     setLoading(true)
     setError(null)
 
-    const url = `/api/collections/${encodeURIComponent(collection)}/sse`
+    const url = `${basePath}/collections/${encodeURIComponent(collection)}/sse`
     const es = new EventSource(url)
 
     es.addEventListener('snapshot', (e: MessageEvent) => {
@@ -48,7 +50,7 @@ export function useDocuments(collection: string | null) {
     return () => {
       es.close()
     }
-  }, [collection])
+  }, [basePath, collection])
 
   return { documents, loading, error }
 }
