@@ -1,16 +1,27 @@
 import { Hono } from 'hono'
 import { betterAuth } from 'better-auth'
-import { getAdminKey } from './config.js'
+import { bearer } from 'better-auth/plugins'
+import { getMigrations } from 'better-auth/db'
+import pg from 'pg'
 
-export const ba = betterAuth({
-  database: {
-    url: process.env.DATABASE_URL || 'postgresql://ezbase:ezbase@localhost:5432/ezbase',
-    type: 'postgres',
-  },
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://ezbase:ezbase@localhost:5432/ezbase',
+})
+
+const authOptions = {
+  database: pool,
   secret: process.env.BETTER_AUTH_SECRET,
   emailAndPassword: { enabled: true, minPasswordLength: 8 },
   session: { expiresIn: 7 * 24 * 60 * 60 },
-})
+  plugins: [bearer()],
+}
+
+export const ba = betterAuth(authOptions)
+
+export async function initAuth() {
+  const { runMigrations } = await getMigrations(authOptions)
+  await runMigrations()
+}
 
 const auth = new Hono()
 

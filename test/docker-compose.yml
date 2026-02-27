@@ -1,0 +1,15 @@
+services:
+  ezbase:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "7003:7003"
+    environment:
+      ADMIN_KEY: "test-admin-key"
+      BETTER_AUTH_SECRET: "test-auth-secret"
+    volumes:
+      - ezdata:/data
+
+volumes:
+  ezdata:

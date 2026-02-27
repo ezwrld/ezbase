@@ -6,7 +6,7 @@ import { initPubSub } from './pubsub.js'
 import { initConfig } from './config.js'
 import { extractAuth } from './middleware.js'
 import { api } from './routes.js'
-import { auth } from './auth.js'
+import { auth, initAuth } from './auth.js'
 import { permissions } from './permissions.js'
 
 const app = new Hono()
@@ -26,7 +26,7 @@ app.onError((err, c) => {
 const port = parseInt(process.env.PORT || '8080')
 
 initConfig()
-await Promise.all([init(), initPubSub()])
+await Promise.all([init(), initPubSub(), initAuth()])
 
 console.log(`ezbase running on :${port}`)
 
