@@ -113,7 +113,7 @@ Under the hood, the SDK calls BetterAuth's endpoints instead of our custom ones.
 
 ```yaml
 ezbase:
-  image: ghcr.io/reidwatson/ezbase:latest
+  image: ghcr.io/ezwrld/ezbase:latest
   ports:
     - "7003:7003"
   volumes:

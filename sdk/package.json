@@ -1,5 +1,5 @@
 {
-  "name": "ezbase",
+  "name": "@ezwrld/ezbase",
   "version": "0.1.0",
   "description": "Client SDK for ezbase — a self-hosted document database with real-time subscriptions",
   "type": "module",
@@ -33,7 +33,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ezbase/ezbase",
+    "url": "https://github.com/ezwrld/ezbase",
     "directory": "sdk"
   },
   "devDependencies": {

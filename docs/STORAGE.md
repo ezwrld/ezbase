@@ -221,7 +221,7 @@ services:
 When ezbase becomes a single Docker image with supervisord, `/data/files/` is just a directory inside the container. The user mounts one volume at `/data` that contains everything — postgres data dir, file storage, configs. One volume = one ezbase instance.
 
 ```bash
-docker run -p 7003:7003 -v ezbase-data:/data ezbase/ezbase
+docker run -p 7003:7003 -v ezbase-data:/data ghcr.io/ezwrld/ezbase
 ```
 
 ---

@@ -9,7 +9,7 @@ How ezbase gets packaged, published, and used in projects.
 | Artifact | Registry | What it is |
 |----------|----------|------------|
 | `ezbase` npm package | npmjs.com | The TypeScript SDK — `npm install ezbase` |
-| `ghcr.io/ezbase/ezbase` Docker image | GitHub Container Registry | The all-in-one server (postgres, redis, API, console, nginx) |
+| `ghcr.io/ezwrld/ezbase` Docker image | GitHub Container Registry | The all-in-one server (postgres, redis, API, console, nginx) |
 
 The SDK is useless without the server. The server is useless without the SDK (or raw curl). They're versioned independently because the SDK changes more often.
 
@@ -28,7 +28,7 @@ services:
       - "3000:3000"
 
   ezbase:
-    image: ghcr.io/ezbase/ezbase:latest
+    image: ghcr.io/ezwrld/ezbase:latest
     ports:
       - "7003:7003"
     volumes:
@@ -117,7 +117,7 @@ cd /path/to/ezbase
 git init -b master
 git add .
 git commit -m "initial commit"
-gh repo create ezbase/ezbase --public --source=. --push
+gh repo create ezwrld/ezbase --public --source=. --push
 ```
 
 ---
