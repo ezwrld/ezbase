@@ -20,10 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
-
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
 
       - name: Bump patch version
         id: version
@@ -33,17 +29,12 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build SDK
+      - name: Build and publish
         working-directory: sdk
         run: |
           npm install
           npm run build
-
-      - name: Publish to npm
-        working-directory: sdk
-        run: npm publish --access public --provenance
-        env:
-          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+          npm publish --access public --provenance
 
       - name: Tag and push version
         run: |
