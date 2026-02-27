@@ -34,7 +34,7 @@ jobs:
         run: |
           npm install
           npm run build
-          npm publish --access public --provenance
+          npm publish --access public
 
       - name: Tag and push version
         run: |
