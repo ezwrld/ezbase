@@ -1,6 +1,0 @@
-{
-  "name": "ezbase-root",
-  "private": true,
-  "type": "module",
-  "workspaces": ["server", "sdk", "console"]
-}
