@@ -1,6 +1,6 @@
 import type { Context, Next } from 'hono'
-import { verify } from 'hono/jwt'
-import { getAdminKey, getJwtSecret } from './config.js'
+import { getAdminKey } from './config.js'
+import { ba } from './auth.js'
 import { sql } from './db.js'
 
 // ── Cache for permission levels ─────────────────────────────
@@ -46,16 +46,22 @@ export async function extractAuth(c: Context, next: Next) {
     return next()
   }
 
-  // Try JWT
+  // Try BetterAuth session
   try {
-    const payload = await verify(token, getJwtSecret())
-    c.set('role', payload.role || 'user')
-    c.set('userId', payload.sub)
-    return next()
-  } catch {
-    c.set('role', 'anonymous')
-    return next()
-  }
+    // Construct headers for BetterAuth — handles both header and query param tokens
+    const headers = new Headers()
+    headers.set('Authorization', `Bearer ${token}`)
+
+    const session = await ba.api.getSession({ headers })
+    if (session) {
+      c.set('role', (session as any).user?.role || 'user')
+      c.set('userId', (session as any).user?.id)
+      return next()
+    }
+  } catch {}
+
+  c.set('role', 'anonymous')
+  return next()
 }
 
 // ── requirePermission — applied to collection routes ────────

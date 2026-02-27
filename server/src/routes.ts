@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { sql } from './db.js'
+import { sql, ensureCollection } from './db.js'
 import { generateId } from './id.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { requirePermission } from './middleware.js'
@@ -17,9 +17,9 @@ api.use('/collections/:collection/*', requirePermission('access'))
 function formatDoc(row: Record<string, unknown>) {
   return {
     id: row.id as string,
-    data: row.body as Record<string, unknown>,
-    created: Number(row.created),
-    updated: Number(row.updated),
+    data: row.data as Record<string, unknown>,
+    created: Number(row.created_at),
+    updated: Number(row.updated_at),
   }
 }
 
@@ -49,8 +49,8 @@ function buildQuery(
   order?: string,
   limitParam?: string
 ) {
-  let query = 'SELECT * FROM documents WHERE collection = $1'
-  const params: unknown[] = [collection]
+  let query = `SELECT * FROM col_${collection} WHERE true`
+  const params: unknown[] = []
 
   if (whereParam) {
     const wheres: [string, string, unknown][] = JSON.parse(whereParam)
@@ -58,14 +58,17 @@ function buildQuery(
       const sqlOp = mapOp(op)
       const idx = params.length + 1
 
-      if (field === 'created' || field === 'updated') {
-        query += ` AND ${field} ${sqlOp} $${idx}`
+      // Map SDK field names to column names
+      const colName = field === 'created' ? 'created_at' : field === 'updated' ? 'updated_at' : null
+
+      if (colName) {
+        query += ` AND ${colName} ${sqlOp} $${idx}`
       } else if (typeof value === 'number') {
-        query += ` AND (body->>'${sanitizeField(field)}')::numeric ${sqlOp} $${idx}`
+        query += ` AND (data->>'${sanitizeField(field)}')::numeric ${sqlOp} $${idx}`
       } else if (typeof value === 'boolean') {
-        query += ` AND (body->>'${sanitizeField(field)}')::boolean ${sqlOp} $${idx}`
+        query += ` AND (data->>'${sanitizeField(field)}')::boolean ${sqlOp} $${idx}`
       } else {
-        query += ` AND body->>'${sanitizeField(field)}' ${sqlOp} $${idx}`
+        query += ` AND data->>'${sanitizeField(field)}' ${sqlOp} $${idx}`
       }
       params.push(value)
     }
@@ -73,13 +76,14 @@ function buildQuery(
 
   if (orderBy) {
     const dir = (order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC'
-    if (orderBy === 'created' || orderBy === 'updated') {
-      query += ` ORDER BY ${orderBy} ${dir}`
+    const colName = orderBy === 'created' ? 'created_at' : orderBy === 'updated' ? 'updated_at' : null
+    if (colName) {
+      query += ` ORDER BY ${colName} ${dir}`
     } else {
-      query += ` ORDER BY body->>'${sanitizeField(orderBy)}' ${dir}`
+      query += ` ORDER BY data->>'${sanitizeField(orderBy)}' ${dir}`
     }
   } else {
-    query += ' ORDER BY created DESC'
+    query += ' ORDER BY created_at DESC'
   }
 
   if (limitParam) {
@@ -96,11 +100,13 @@ function buildQuery(
 // ── SSE: document-level subscription ──────────────────────────
 api.get('/collections/:collection/:id/sse', async (c) => {
   const { collection, id } = c.req.param()
+  await ensureCollection(collection)
+  const table = sql(`col_${collection}`)
 
   return streamSSE(c, async (stream) => {
     const sendSnapshot = async () => {
       const rows = await sql`
-        SELECT * FROM documents WHERE collection = ${collection} AND id = ${id}
+        SELECT * FROM ${table} WHERE id = ${id}
       `
       const doc = rows.length > 0 ? formatDoc(rows[0]) : null
       await stream.writeSSE({ event: 'snapshot', data: JSON.stringify(doc) })
@@ -124,6 +130,8 @@ api.get('/collections/:collection/:id/sse', async (c) => {
 // ── SSE: collection / query subscription ──────────────────────
 api.get('/collections/:collection/sse', async (c) => {
   const collection = c.req.param('collection')
+  await ensureCollection(collection)
+
   const whereParam = c.req.query('where')
   const orderBy = c.req.query('orderBy')
   const order = c.req.query('order')
@@ -161,21 +169,26 @@ api.get('/collections/:collection/sse', async (c) => {
 // ── List collections ─────────────────────────────────────────
 api.get('/collections', async (c) => {
   const rows = await sql`
-    SELECT DISTINCT collection FROM documents ORDER BY collection
+    SELECT table_name FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name LIKE 'col_%'
+    ORDER BY table_name
   `
-  return c.json(rows.map((r) => r.collection))
+  return c.json(rows.map((r) => (r.table_name as string).slice(4)))
 })
 
 // ── CRUD ──────────────────────────────────────────────────────
 api.post('/collections/:collection', async (c) => {
   const collection = c.req.param('collection')
+  await ensureCollection(collection)
+  const table = sql(`col_${collection}`)
+
   const body = await c.req.json()
   const id = generateId()
   const now = Date.now()
 
   const rows = await sql`
-    INSERT INTO documents (collection, id, body, created, updated)
-    VALUES (${collection}, ${id}, ${sql.json(body)}, ${now}, ${now})
+    INSERT INTO ${table} (id, data, created_at, updated_at)
+    VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
     RETURNING *
   `
 
@@ -186,6 +199,8 @@ api.post('/collections/:collection', async (c) => {
 
 api.get('/collections/:collection', async (c) => {
   const collection = c.req.param('collection')
+  await ensureCollection(collection)
+
   const { query, params } = buildQuery(
     collection,
     c.req.query('where'),
@@ -199,8 +214,11 @@ api.get('/collections/:collection', async (c) => {
 
 api.get('/collections/:collection/:id', async (c) => {
   const { collection, id } = c.req.param()
+  await ensureCollection(collection)
+  const table = sql(`col_${collection}`)
+
   const rows = await sql`
-    SELECT * FROM documents WHERE collection = ${collection} AND id = ${id}
+    SELECT * FROM ${table} WHERE id = ${id}
   `
   if (rows.length === 0) {
     return c.json({ error: 'Document not found' }, 404)
@@ -210,14 +228,17 @@ api.get('/collections/:collection/:id', async (c) => {
 
 api.put('/collections/:collection/:id', async (c) => {
   const { collection, id } = c.req.param()
+  await ensureCollection(collection)
+  const table = sql(`col_${collection}`)
+
   const body = await c.req.json()
   const now = Date.now()
 
   const rows = await sql`
-    INSERT INTO documents (collection, id, body, created, updated)
-    VALUES (${collection}, ${id}, ${sql.json(body)}, ${now}, ${now})
-    ON CONFLICT (collection, id)
-    DO UPDATE SET body = EXCLUDED.body, updated = EXCLUDED.updated
+    INSERT INTO ${table} (id, data, created_at, updated_at)
+    VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
+    ON CONFLICT (id)
+    DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
     RETURNING *, (xmax = 0) AS is_new
   `
 
@@ -229,12 +250,15 @@ api.put('/collections/:collection/:id', async (c) => {
 
 api.patch('/collections/:collection/:id', async (c) => {
   const { collection, id } = c.req.param()
+  await ensureCollection(collection)
+  const table = sql(`col_${collection}`)
+
   const body = await c.req.json()
   const now = Date.now()
 
   const rows = await sql`
-    UPDATE documents SET body = body || ${sql.json(body)}, updated = ${now}
-    WHERE collection = ${collection} AND id = ${id}
+    UPDATE ${table} SET data = data || ${sql.json(body)}, updated_at = ${now}
+    WHERE id = ${id}
     RETURNING *
   `
 
@@ -249,9 +273,11 @@ api.patch('/collections/:collection/:id', async (c) => {
 
 api.delete('/collections/:collection/:id', async (c) => {
   const { collection, id } = c.req.param()
+  await ensureCollection(collection)
+  const table = sql(`col_${collection}`)
 
   const rows = await sql`
-    DELETE FROM documents WHERE collection = ${collection} AND id = ${id}
+    DELETE FROM ${table} WHERE id = ${id}
     RETURNING *
   `
 

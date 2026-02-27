@@ -8,12 +8,11 @@
     "start": "bun run src/index.ts"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
+    "better-auth": "^1.2.0",
     "hono": "^4.0.0",
     "postgres": "^3.4.0"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
     "typescript": "^5.5.0"
   }
 }

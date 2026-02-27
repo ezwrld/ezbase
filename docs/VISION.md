@@ -28,16 +28,17 @@ If a cloud provider goes down, your data does not. EZBase runs on your VPS in Do
 
 ## Architecture
 
-Four containers in a Docker Compose stack:
+Three containers in a Docker Compose dev stack (one container in production via supervisord):
 
 | Service | Role | Tech | ~RAM |
 |---|---|---|---|
-| **API** | REST + SSE + auth + rules engine | Hono on Node | ~100MB |
-| **PostgreSQL** | Document storage (JSONB), files, the durable core | Postgres 16 | 500MB–1GB |
-| **Meilisearch** | Full-text search | Meilisearch | 200–500MB |
+| **API** | REST + SSE + auth + rules engine | Hono on Bun | ~100MB |
+| **PostgreSQL** | Document storage (JSONB), pub/sub (LISTEN/NOTIFY), auth (BetterAuth) | Postgres 16 | 500MB–1GB |
 | **Console** | Web UI for managing everything | React + Vite (Nginx) | ~30MB |
 
-**Total footprint: ~1–2GB on a 4GB VPS.**
+Meilisearch will be added when full-text search is implemented.
+
+**Total footprint: ~800MB–1.5GB on a 4GB VPS.**
 
 ### Why Hono?
 
@@ -55,25 +56,23 @@ When you first write to `db.collection('bookings')`, EZBase automatically create
 
 ```sql
 CREATE TABLE IF NOT EXISTS col_bookings (
-  id          TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  data        JSONB NOT NULL,
-  created_at  TIMESTAMPTZ DEFAULT now(),
-  updated_at  TIMESTAMPTZ DEFAULT now(),
-  archived    BOOLEAN DEFAULT false
+  id         TEXT PRIMARY KEY,
+  data       JSONB NOT NULL DEFAULT '{}',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bookings_data ON col_bookings USING GIN (data);
+CREATE INDEX IF NOT EXISTS idx_bookings_created ON col_bookings (created_at);
 ```
 
-You never see this SQL. The API handles table creation, GIN indexing, and cache invalidation internally. The `col_` prefix avoids collisions with Postgres system tables. The developer just calls `.collection('whatever')` and it works.
+You never see this SQL. The API handles table creation, GIN indexing, and cache invalidation internally. The `col_` prefix avoids collisions with Postgres system tables and BetterAuth's tables. The developer just calls `.collection('whatever')` and it works.
 
 **Why one table per collection (not one mega-table)?** GIN indexes scale with table size. If bookings and analytics events share a table, every query pays the cost of indexing both. Separate tables mean each index is scoped to its collection. Postgres also maintains vacuuming, autovacuum tuning, and table statistics per table — one mega-table means hot collections pollute the maintenance of cold ones.
 
 Additional internal tables:
 
-- `_ezbase_meta` — per-collection config (type schema, permission level, search settings, relations)
-- `_ezbase_users` — auth users, hashed passwords, roles, custom claims
-- `_ezbase_files_meta` — file metadata (path, size, mime type, ownership, timestamps)
-- `_ezbase_files_data` — file binary content (BYTEA)
+- `_ezbase_config` — per-collection permission levels
+- `user`, `session`, `account`, `verification` — managed by BetterAuth (auth users, sessions)
 
 ### Capacity at scale
 
@@ -83,7 +82,7 @@ Additional internal tables:
 | Moderate growth (1K–2K users) | ~3K–6K | ~1.5–2GB | $20 |
 | Heavy analytics + search | Same | ~2.5–3GB | $20–24 |
 
-A single Node process can hold 10,000–50,000 concurrent SSE connections. At small-to-medium scale, compute is never the bottleneck.
+A single Bun process can hold 10,000–50,000 concurrent SSE connections. At small-to-medium scale, compute is never the bottleneck.
 
 ### JSONB query performance (4GB VPS, SSD)
 
@@ -191,27 +190,24 @@ Realtime resolution also works — subscribe to a checkout AND its resolved book
 | Layer | Purpose | Where it lives |
 |---|---|---|
 | **Project Key** | Identifies which project a request is for. Public, non-secret. Ships in client code. | Client SDK config |
-| **Auth Token (JWT)** | Identifies who is making the request. Issued on login. | Authorization header |
+| **Auth Token (Session)** | Identifies who is making the request. Issued on login via BetterAuth. | Authorization header |
 | **Collection Rules** | Determines what that user can access. Evaluated on every request including SSE. | Console / config |
 | **Admin Key** | Server-to-server secret. Bypasses all rules. Never touches the client. | Server env vars |
 
 ### Auth
 
-JWT-based. Users table in Postgres with bcrypt-hashed passwords. OAuth provider support via standard provider SDKs. The SDK exposes:
+Powered by BetterAuth — session-based authentication stored in Postgres. Supports email/password out of the box, OAuth when provider credentials are configured. The SDK exposes:
 
 ```typescript
 // Email/password
 await ez.auth.signUp({ email, password })
 await ez.auth.signIn({ email, password })
 
-// OAuth
-await ez.auth.signInWithProvider('google')
-
 // Current user
 const user = ez.auth.currentUser
 ```
 
-The JWT includes user ID, role, and any custom claims you set. Tokens refresh automatically.
+BetterAuth manages user tables, sessions, and token lifecycle automatically. The `BETTER_AUTH_SECRET` env var must be set for production (auto-generated in dev).
 
 ### Collection permissions
 
@@ -228,7 +224,7 @@ Three levels per collection, configured in the console or a config file. Covers 
 | Level | Behavior |
 |---|---|
 | **public** | Anyone can read, no auth needed |
-| **authenticated** | Any logged-in user with a valid JWT can read |
+| **authenticated** | Any logged-in user with a valid session can read |
 | **admin** | Only admin key can read (server-side only) |
 
 For cases where you need document-level filtering (e.g., users can only read their own bookings), add a `filtered` mode later:
@@ -268,7 +264,9 @@ Typo tolerance, ranking, and tokenization are handled by Meilisearch out of the 
 
 ## File Storage
 
-Files are stored directly in Postgres as binary data (`BYTEA`). No extra services, no filesystem volumes to manage, no sync issues. Your data and your files live in the same database, back up together atomically, and restore together.
+**Status:** Not yet built. See `docs/STORAGE.md` for the full plan.
+
+Files are stored on the filesystem (Docker volume at `/data/files/`) with metadata tracked in Postgres. This keeps binary data out of the database while still providing a clean SDK API and atomic metadata operations.
 
 ```typescript
 // Upload
@@ -281,23 +279,16 @@ const url = ez.storage.url('avatars/user123.jpg')
 await ez.storage.delete('avatars/user123.jpg')
 ```
 
-Under the hood, two internal tables:
-
-- `_ezbase_files_meta` — path, size, mime type, ownership, timestamps
-- `_ezbase_files_data` — the actual binary content
-
-For a few GB of images and PDFs, this is a non-issue. A 5GB database dumps in under a minute. If file backups ever grow large enough to be annoying, `pg_dump` can target tables separately — back up file data weekly, everything else daily. Same tool, just a flag.
-
-The "don't store files in Postgres" advice is for people serving terabytes of video. For app images, avatars, and document uploads, keeping everything in one place means one backup, one restore, zero orphaned references, zero extra infrastructure.
+Backups: `pg_dump` for metadata + `tar` for files, or mount a persistent volume and let your VPS backup strategy handle it.
 
 ---
 
 ## SDK
 
-One SDK, two modes. Published to npm as `@ezbase/sdk`. Written in TypeScript. Unlike Firebase's split client/admin SDKs with completely different APIs, EZBase uses a single SDK with identical syntax everywhere. The mode is determined by how you initialize it:
+One SDK, two modes. Published to npm as `@ezwrld/ezbase`. Written in TypeScript. Unlike Firebase's split client/admin SDKs with completely different APIs, EZBase uses a single SDK with identical syntax everywhere. The mode is determined by how you initialize it:
 
 ```typescript
-import { EZBase } from '@ezbase/sdk'
+import { EZBase } from '@ezwrld/ezbase'
 
 // Client mode — rules enforced, auth required for locked collections
 const ez = new EZBase({

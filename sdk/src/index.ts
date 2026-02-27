@@ -100,40 +100,55 @@ class AuthClient {
   }
 
   async signUp(opts: { email: string; password: string }): Promise<{ token: string; user: AuthUser }> {
-    const res = await fetch(`${this.ez['url']}/api/auth/signup`, {
+    const res = await fetch(`${this.ez['url']}/api/auth/sign-up/email`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.ez['_authHeaders']() },
-      body: JSON.stringify(opts),
+      body: JSON.stringify({ email: opts.email, password: opts.password, name: opts.email }),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(`ezbase: ${body.error || res.statusText}`)
+      throw new Error(`ezbase: ${body.error || body.message || res.statusText}`)
     }
     const data = await res.json()
-    this._token = data.token
-    this._currentUser = data.user
+    this._token = data.session?.token || data.token
+    this._currentUser = {
+      id: data.user?.id || data.id,
+      email: data.user?.email || data.email,
+      role: data.user?.role || 'user',
+    }
     this._notify()
-    return data
+    return { token: this._token!, user: this._currentUser! }
   }
 
   async signIn(opts: { email: string; password: string }): Promise<{ token: string; user: AuthUser }> {
-    const res = await fetch(`${this.ez['url']}/api/auth/signin`, {
+    const res = await fetch(`${this.ez['url']}/api/auth/sign-in/email`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.ez['_authHeaders']() },
-      body: JSON.stringify(opts),
+      body: JSON.stringify({ email: opts.email, password: opts.password }),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(`ezbase: ${body.error || res.statusText}`)
+      throw new Error(`ezbase: ${body.error || body.message || res.statusText}`)
     }
     const data = await res.json()
-    this._token = data.token
-    this._currentUser = data.user
+    this._token = data.session?.token || data.token
+    this._currentUser = {
+      id: data.user?.id || data.id,
+      email: data.user?.email || data.email,
+      role: data.user?.role || 'user',
+    }
     this._notify()
-    return data
+    return { token: this._token!, user: this._currentUser! }
   }
 
-  signOut() {
+  async signOut() {
+    // Fire-and-forget server-side sign out
+    if (this._token) {
+      fetch(`${this.ez['url']}/api/auth/sign-out`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.ez['_authHeaders']() },
+      }).catch(() => {})
+    }
     this._token = null
     this._currentUser = null
     this._notify()

@@ -15,13 +15,17 @@ Detailed specs and plans live in `docs/`:
 | `docs/VISION.md` | Full product vision, feature specs, SDK API surface, console pages, security model |
 | `docs/STORAGE.md` | File storage plan — filesystem + metadata in Postgres, SDK surface, backup strategy |
 | `docs/DISTRIBUTION.md` | Packaging, versioning, GitHub Actions, how to use ezbase in other projects |
+| `docs/AUTH.md` | BetterAuth integration details |
+| `docs/CI-CD.md` | GitHub Actions workflows (OIDC publishing, Docker builds) |
+| `docs/GUIDE.md` | Implementation guide for using ezbase in projects |
 
 ## What's built
 
 - **Document CRUD** — create, read, update (full + partial), delete via REST
 - **Real-time** — SSE subscriptions at collection, document, and query level
 - **Query filtering** — `where`, `orderBy`, `order`, `limit`
-- **Auth** — signup/signin, JWT tokens, bcrypt passwords, per-collection permissions (public/authenticated/admin)
+- **Per-collection tables** — each collection gets its own `col_<name>` Postgres table with GIN indexes
+- **Auth** — BetterAuth (email/password, session tokens), per-collection permissions (public/authenticated/admin)
 - **Console** — React + Vite + Tailwind SPA with live-updating document tables
 - **SDK** — zero-dependency TypeScript client, works in Node/Bun/Deno/browsers
 - **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`
@@ -29,20 +33,20 @@ Detailed specs and plans live in `docs/`:
 
 ## What's not built yet
 
-File storage, Meilisearch integration, gradual type system, relations, backups, OAuth (plan: BetterAuth).
+File storage, Meilisearch integration, gradual type system, relations, backups, OAuth providers.
 
 ## Architecture
 
 Monorepo: `server/`, `sdk/`, `console/`. Runs as a Docker Compose stack in development, single all-in-one Docker image for distribution.
 
-| Component | Current | Target |
-|-----------|---------|--------|
-| **Runtime** | Node.js + Hono | Bun + Hono (native postgres/redis, fewer deps) |
-| **Storage** | Single `documents` table | Per-collection tables (`col_*`) |
-| **Pub/sub** | Redis pub/sub | Postgres LISTEN/NOTIFY (drop Redis) |
-| **Auth** | Custom JWT + bcrypt | BetterAuth (OAuth, 2FA, sessions) |
-| **Search** | Not built | Meilisearch |
-| **Files** | Not built | Filesystem (Docker volume) + metadata in Postgres |
+| Component | Status |
+|-----------|--------|
+| **Runtime** | Bun + Hono |
+| **Storage** | Per-collection tables (`col_*`) with JSONB + GIN indexes |
+| **Pub/sub** | Postgres LISTEN/NOTIFY |
+| **Auth** | BetterAuth (sessions, email/password) |
+| **Search** | Not built (plan: Meilisearch) |
+| **Files** | Not built (plan: filesystem + metadata in Postgres) |
 
 ## Dev workflow
 
@@ -62,15 +66,15 @@ Verify: `curl http://localhost:7003/api/health`
 |------|---------|
 | `server/src/index.ts` | Entry point, mounts API at `/api` |
 | `server/src/routes.ts` | CRUD, SSE, query building |
-| `server/src/auth.ts` | Signup, signin, JWT |
-| `server/src/middleware.ts` | Auth extraction, permission checks |
+| `server/src/auth.ts` | BetterAuth instance + `/me` handler |
+| `server/src/middleware.ts` | Auth extraction (BetterAuth sessions), permission checks |
 | `server/src/permissions.ts` | Collection permission CRUD |
-| `server/src/db.ts` | Postgres pool + schema init |
-| `server/src/pubsub.ts` | Redis pub/sub for real-time |
+| `server/src/db.ts` | Postgres connection, `ensureCollection()`, schema init |
+| `server/src/pubsub.ts` | Postgres LISTEN/NOTIFY for real-time |
 | `sdk/src/index.ts` | Client SDK |
 | `console/` | React + Vite admin dashboard |
 | `Dockerfile` | All-in-one production image |
-| `docker-compose.yml` | Dev stack (postgres, redis, server, console, nginx) |
+| `docker-compose.yml` | Dev stack (postgres, server, console, nginx) |
 
 ## API (all under `/api`)
 
@@ -86,18 +90,19 @@ Verify: `curl http://localhost:7003/api/health`
 | DELETE | `/collections/:col/:id` | Delete document |
 | GET | `/collections/:col/sse` | SSE (collection/query level) |
 | GET | `/collections/:col/:id/sse` | SSE (document level) |
-| POST | `/auth/signup` | Register (email + password) |
-| POST | `/auth/signin` | Login |
+| POST | `/auth/sign-up/email` | Register (BetterAuth) |
+| POST | `/auth/sign-in/email` | Login (BetterAuth) |
+| POST | `/auth/sign-out` | Logout (BetterAuth) |
 | GET | `/auth/me` | Current user |
 | GET | `/collections/:col/permissions` | Get permission level (admin) |
 | PUT | `/collections/:col/permissions` | Set permission level (admin) |
 
 ## Database
 
-Single table: `documents(collection TEXT, id TEXT, body JSONB, created BIGINT, updated BIGINT)` with composite PK `(collection, id)`. Auth users in `_ezbase_users`. Collection permissions in `_ezbase_config`.
+Per-collection tables: `col_<name>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with GIN index on `data`. Auth managed by BetterAuth (`user`, `session`, `account`, `verification` tables). Collection permissions in `_ezbase_config`.
 
 ## Releasing
 
-Automatic on merge to main. GitHub Actions detect what changed:
-- `sdk/**` changed → bumps SDK patch version, publishes to npm, tags `sdk-vX.X.X`
-- `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → bumps image patch version, pushes to GHCR, tags `vX.X.X`
+Automatic on merge to master. GitHub Actions detect what changed:
+- `sdk/**` changed → bumps SDK patch version, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.X.X`
+- `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → bumps image patch version, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.X.X`

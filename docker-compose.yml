@@ -19,7 +19,7 @@ services:
       DATABASE_URL: postgresql://ezbase:ezbase@postgres:5432/ezbase
       PORT: "8080"
       # ADMIN_KEY: "your-secret-admin-key"    # auto-generated if not set
-      JWT_SECRET: "dev-jwt-secret-change-in-prod"
+      BETTER_AUTH_SECRET: "dev-auth-secret-change-in-prod"
     depends_on:
       postgres:
         condition: service_healthy

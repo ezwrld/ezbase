@@ -1,6 +1,6 @@
 # Auth — BetterAuth Integration Plan
 
-**Status:** Not yet built. Replaces the current hand-rolled JWT + bcrypt auth.
+**Status:** Implemented. Replaced the hand-rolled JWT + bcrypt auth.
 
 ## Why BetterAuth
 

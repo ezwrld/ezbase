@@ -9,7 +9,7 @@ This is the reference doc for setting up and using ezbase in a project. If you'r
 A self-hosted document database. One Docker image gives you:
 - Document store (Postgres JSONB)
 - Real-time subscriptions (SSE via Postgres LISTEN/NOTIFY)
-- Auth (email/password, JWT, per-collection permissions)
+- Auth (email/password via BetterAuth, session tokens, per-collection permissions)
 - Admin console (React web UI)
 
 Think Firebase but self-hosted, zero config, runs anywhere Docker runs.
@@ -184,7 +184,7 @@ await fetch('http://localhost:7003/api/collections/private-stuff/permissions', {
 
 Levels:
 - `public` (default) — anyone can read/write
-- `authenticated` — requires a valid JWT
+- `authenticated` — requires a valid session token
 - `admin` — requires admin key
 
 ---
@@ -205,8 +205,9 @@ All endpoints under `/api` on port 7003.
 | DELETE | `/collections/:col/:id` | Delete document |
 | GET | `/collections/:col/sse` | Subscribe to collection (SSE) |
 | GET | `/collections/:col/:id/sse` | Subscribe to document (SSE) |
-| POST | `/auth/signup` | Create account |
-| POST | `/auth/signin` | Sign in |
+| POST | `/auth/sign-up/email` | Create account (BetterAuth) |
+| POST | `/auth/sign-in/email` | Sign in (BetterAuth) |
+| POST | `/auth/sign-out` | Sign out (BetterAuth) |
 | GET | `/auth/me` | Current user |
 | GET | `/collections/:col/permissions` | Get permission level (admin) |
 | PUT | `/collections/:col/permissions` | Set permission level (admin) |
@@ -223,13 +224,13 @@ All endpoints under `/api` on port 7003.
 ### Auth headers
 
 ```
-Authorization: Bearer <jwt-token>     # for authenticated users
-Authorization: Bearer <admin-key>     # for admin access
+Authorization: Bearer <session-token>     # for authenticated users
+Authorization: Bearer <admin-key>         # for admin access
 ```
 
 For SSE endpoints, pass token as query param since EventSource can't set headers:
 ```
-/api/collections/todos/sse?token=<jwt-token>
+/api/collections/todos/sse?token=<session-token>
 ```
 
 ---
@@ -241,10 +242,10 @@ Pass these to the ezbase container:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ADMIN_KEY` | auto-generated | Admin key for bypassing permissions |
-| `JWT_SECRET` | auto-generated | Secret for signing JWTs |
+| `BETTER_AUTH_SECRET` | auto-generated | Secret for BetterAuth session signing |
 | `DATABASE_URL` | internal | Postgres connection string (only override if using external Postgres) |
 
-For production, set `ADMIN_KEY` and `JWT_SECRET` explicitly so they persist across container restarts:
+For production, set `ADMIN_KEY` and `BETTER_AUTH_SECRET` explicitly so they persist across container restarts:
 
 ```yaml
 ezbase:
@@ -255,7 +256,7 @@ ezbase:
     - ezbase-data:/data
   environment:
     ADMIN_KEY: "your-secret-admin-key"
-    JWT_SECRET: "your-secret-jwt-secret"
+    BETTER_AUTH_SECRET: "your-secret-auth-secret"
 ```
 
 ---
@@ -307,8 +308,7 @@ The dev stack uses `docker-compose.yml` with separate containers for each servic
 
 See `docs/` in the repo for detailed plans:
 - `docs/STORAGE.md` — file storage (filesystem + metadata in Postgres)
-- `docs/AUTH.md` — BetterAuth integration (OAuth, 2FA)
-- `docs/BUN-MIGRATION.md` — Bun migration status (mostly complete)
+- `docs/AUTH.md` — BetterAuth integration details
 - `docs/DISTRIBUTION.md` — packaging and versioning
 - `docs/CI-CD.md` — GitHub Actions workflows
 - `docs/VISION.md` — full product vision

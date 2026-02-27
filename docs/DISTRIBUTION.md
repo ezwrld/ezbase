@@ -8,8 +8,8 @@ How ezbase gets packaged, published, and used in projects.
 
 | Artifact | Registry | What it is |
 |----------|----------|------------|
-| `ezbase` npm package | npmjs.com | The TypeScript SDK — `npm install ezbase` |
-| `ghcr.io/ezwrld/ezbase` Docker image | GitHub Container Registry | The all-in-one server (postgres, redis, API, console, nginx) |
+| `@ezwrld/ezbase` npm package | npmjs.com | The TypeScript SDK — `npm install @ezwrld/ezbase` |
+| `ghcr.io/ezwrld/ezbase` Docker image | GitHub Container Registry | The all-in-one server (postgres, API, console, nginx) |
 
 The SDK is useless without the server. The server is useless without the SDK (or raw curl). They're versioned independently because the SDK changes more often.
 
@@ -43,13 +43,13 @@ One service. One port. One volume. Same as adding redis or meilisearch.
 ### 2. Install the SDK
 
 ```bash
-npm install ezbase
+npm install @ezwrld/ezbase
 ```
 
 ### 3. Use it
 
 ```typescript
-import { EZBase } from 'ezbase'
+import { EZBase } from '@ezwrld/ezbase'
 
 const ez = new EZBase({ url: 'http://localhost:7003' })
 
@@ -99,26 +99,13 @@ Automatic on merge to master. GitHub Actions detect what changed:
 
 ### npm
 
-1. Create an account at npmjs.com (if you don't have one)
-2. Run `npm login` locally to verify it works
-3. Add `NPM_TOKEN` as a repository secret in GitHub (Settings → Secrets → Actions)
-   - Generate at: npmjs.com → Access Tokens → Generate New Token (Automation)
+Uses OIDC trusted publishing — no `NPM_TOKEN` needed. See `docs/CI-CD.md` for details.
 
 ### GitHub Container Registry
 
 No extra setup — the `GITHUB_TOKEN` secret is automatic. The `publish-image.yml` workflow uses it to push to `ghcr.io`.
 
 After the first image push, go to your package settings on GitHub and make it public if you want (it defaults to your repo's visibility).
-
-### Git repo
-
-```bash
-cd /path/to/ezbase
-git init -b master
-git add .
-git commit -m "initial commit"
-gh repo create ezwrld/ezbase --public --source=. --push
-```
 
 ---
 
