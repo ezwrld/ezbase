@@ -4,13 +4,13 @@
 # Single port (7003), single volume (/data)
 # =============================================================================
 
-FROM node:20-alpine AS console-builder
+FROM oven/bun:1-alpine AS console-builder
 
 WORKDIR /build/console
-COPY console/package*.json ./
-RUN npm install
+COPY console/package.json console/bun.lock* ./
+RUN bun install
 COPY console/ ./
-RUN npm run build
+RUN bun run build
 
 # -----------------------------------------------------------------------------
 
