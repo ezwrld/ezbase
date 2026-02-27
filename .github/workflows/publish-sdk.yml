@@ -1,0 +1,52 @@
+name: Publish SDK to npm
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'sdk/**'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Bump patch version
+        id: version
+        working-directory: sdk
+        run: |
+          npm version patch --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build SDK
+        working-directory: sdk
+        run: |
+          npm install
+          npm run build
+
+      - name: Publish to npm
+        working-directory: sdk
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag and push version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sdk/package.json
+          git commit -m "sdk: release v${{ steps.version.outputs.VERSION }}"
+          git tag "sdk-v${{ steps.version.outputs.VERSION }}"
+          git push
+          git push --tags

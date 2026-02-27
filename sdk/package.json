@@ -1,0 +1,42 @@
+{
+  "name": "ezbase",
+  "version": "0.1.0",
+  "description": "Client SDK for ezbase — a self-hosted document database with real-time subscriptions",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "database",
+    "document-database",
+    "realtime",
+    "sse",
+    "firebase-alternative",
+    "self-hosted",
+    "baas"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ezbase/ezbase",
+    "directory": "sdk"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
