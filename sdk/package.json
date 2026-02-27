@@ -1,6 +1,6 @@
 {
   "name": "@ezwrld/ezbase",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Client SDK for ezbase — a self-hosted document database with real-time subscriptions",
   "type": "module",
   "main": "dist/index.js",
