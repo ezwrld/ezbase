@@ -18,8 +18,20 @@ services:
     environment:
       DATABASE_URL: postgresql://ezbase:ezbase@postgres:5432/ezbase
       PORT: "8080"
-      # ADMIN_KEY: "your-secret-admin-key"    # auto-generated if not set
-      BETTER_AUTH_SECRET: "dev-auth-secret-change-in-prod"
+      ADMIN_KEY: "test-admin-key"
+      RULES_PATH: "/tmp/rules.json"
+      STORAGE_PATH: "/tmp/ezbase-files"
+      # BETTER_AUTH_URL: "http://localhost:7003"    # required for OAuth (callback URLs)
+      # GOOGLE_CLIENT_ID: ""
+      # GOOGLE_CLIENT_SECRET: ""
+      # GITHUB_CLIENT_ID: ""
+      # GITHUB_CLIENT_SECRET: ""
+      # MICROSOFT_CLIENT_ID: ""
+      # MICROSOFT_CLIENT_SECRET: ""
+      # APPLE_CLIENT_ID: ""
+      # APPLE_CLIENT_SECRET: ""
+    volumes:
+      - storage:/tmp/ezbase-files
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,3 +55,4 @@ services:
 volumes:
   pgdata:
   console_node_modules:
+  storage:

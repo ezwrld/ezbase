@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
 
-export function useDatabases() {
+export function useDatabases(adminKey: string) {
   const [databases, setDatabases] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/databases')
+      const res = await fetch('/api/databases', {
+        headers: { Authorization: `Bearer ${adminKey}` },
+      })
       if (!res.ok) throw new Error(`${res.status}`)
       const data: string[] = await res.json()
       setDatabases(data)
@@ -17,7 +19,7 @@ export function useDatabases() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [adminKey])
 
   useEffect(() => {
     refresh()

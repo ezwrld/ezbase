@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 
-export function useCollections(database: string) {
+export function useCollections(database: string, adminKey: string) {
   const [collections, setCollections] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -9,7 +9,9 @@ export function useCollections(database: string) {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch(`${basePath}/collections`)
+      const res = await fetch(`${basePath}/collections`, {
+        headers: { Authorization: `Bearer ${adminKey}` },
+      })
       if (!res.ok) throw new Error(`${res.status}`)
       const data: string[] = await res.json()
       setCollections(data)
@@ -19,7 +21,7 @@ export function useCollections(database: string) {
     } finally {
       setLoading(false)
     }
-  }, [basePath])
+  }, [basePath, adminKey])
 
   useEffect(() => {
     setLoading(true)

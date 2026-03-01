@@ -23,20 +23,11 @@ case "$1" in
     cd "$EZBASE_SRC"
     docker compose logs -f "${@:2}"
     ;;
-  sync)
-    if [ ! -d "./ezbase" ] && [ ! -L "./ezbase" ]; then
-      printf "No ezbase/ directory found in current directory\n"
-      exit 1
-    fi
-    rsync -a --delete --exclude node_modules "$EZBASE_SRC/" ./ezbase/
-    printf "ezbase synced\n"
-    ;;
   *)
     printf "Usage: ez <command>\n\n"
     printf "  up           Start ezbase on :7003\n"
     printf "  down         Stop ezbase\n"
     printf "  down --nuke  Stop and wipe all data\n"
     printf "  logs         Tail container logs\n"
-    printf "  sync         Copy ezbase to ./ezbase/ in current project\n"
     ;;
 esac

@@ -45,10 +45,6 @@ export function qualifiedTable(database: string, collection: string) {
   return sql(`db_${database}.col_${collection}`)
 }
 
-export function qualifiedConfig(database: string) {
-  return sql(`db_${database}._ezbase_config`)
-}
-
 // ── Database (schema) management ────────────────────────────
 export async function ensureDatabase(name: string) {
   const err = validateDatabaseName(name)
@@ -58,12 +54,6 @@ export async function ensureDatabase(name: string) {
 
   const schema = sql(`db_${name}`)
   await sql`CREATE SCHEMA IF NOT EXISTS ${schema}`
-  await sql`
-    CREATE TABLE IF NOT EXISTS ${qualifiedConfig(name)} (
-      collection TEXT PRIMARY KEY,
-      level TEXT NOT NULL DEFAULT 'public'
-    )
-  `
 
   ensuredDatabases.add(name)
 }
@@ -102,38 +92,22 @@ export async function migrateToSchemas() {
     ORDER BY table_name
   `
 
-  const hasConfig = await sql`
-    SELECT table_name FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = '_ezbase_config'
-  `
-
-  if (publicTables.length === 0 && hasConfig.length === 0) return
+  if (publicTables.length === 0) return
 
   console.log(`migrating ${publicTables.length} collection(s) to db_default schema...`)
 
   // Ensure the db_default schema exists
   await sql`CREATE SCHEMA IF NOT EXISTS db_default`
 
-  // Move _ezbase_config first
-  if (hasConfig.length > 0) {
-    // Check if db_default already has _ezbase_config
-    const destConfig = await sql`
-      SELECT table_name FROM information_schema.tables
-      WHERE table_schema = 'db_default' AND table_name = '_ezbase_config'
-    `
-    if (destConfig.length === 0) {
-      await sql`ALTER TABLE public._ezbase_config SET SCHEMA db_default`
-      console.log('  moved _ezbase_config → db_default')
-    } else {
-      // Merge rows then drop old table
-      await sql`
-        INSERT INTO db_default._ezbase_config (collection, level)
-        SELECT collection, level FROM public._ezbase_config
-        ON CONFLICT (collection) DO NOTHING
-      `
-      await sql`DROP TABLE public._ezbase_config`
-      console.log('  merged _ezbase_config → db_default (already existed)')
-    }
+  // Drop legacy _ezbase_config tables if they exist
+  const legacyConfigs = await sql`
+    SELECT table_schema FROM information_schema.tables
+    WHERE table_name = '_ezbase_config'
+  `
+  for (const row of legacyConfigs) {
+    const schema = row.table_schema as string
+    await sql.unsafe(`DROP TABLE IF EXISTS "${schema}"._ezbase_config`)
+    console.log(`  dropped legacy _ezbase_config from ${schema}`)
   }
 
   // Move each col_* table
@@ -168,6 +142,22 @@ export function clearDatabaseCaches(database: string) {
 export async function init() {
   // BetterAuth manages user/session tables in public schema automatically
   await ensureDatabase('default')
+
+  // File storage metadata table (global, in public schema)
+  await sql`
+    CREATE TABLE IF NOT EXISTS _ezbase_files (
+      path        TEXT PRIMARY KEY,
+      bucket      TEXT NOT NULL,
+      filename    TEXT NOT NULL,
+      size        BIGINT NOT NULL,
+      mime_type   TEXT NOT NULL,
+      uploaded_by TEXT,
+      created_at  BIGINT NOT NULL,
+      updated_at  BIGINT NOT NULL
+    )
+  `
+  await sql`CREATE INDEX IF NOT EXISTS idx_files_bucket ON _ezbase_files (bucket)`
+  await sql`CREATE INDEX IF NOT EXISTS idx_files_uploaded_by ON _ezbase_files (uploaded_by)`
 }
 
 export { sql }

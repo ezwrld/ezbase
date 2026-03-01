@@ -38,9 +38,12 @@ Console at `http://localhost:7003/console`.
 
 - **Documents** — schemaless JSONB, collections created on first write
 - **Real-time** — SSE subscriptions on collections, queries, or individual docs
-- **Auth** — email/password, session tokens, per-collection permissions
+- **Auth** — email/password, OAuth providers, session tokens, custom roles & claims
+- **Permissions** — per-collection rules with separate read/write levels, claim-based document filters
+- **File storage** — upload/download/delete, bucket permissions, owner mode
 - **Querying** — `where`, `orderBy`, `limit`
-- **Admin console** — browse collections and documents
+- **Multi-database** — isolated databases per instance, shared auth
+- **Admin console** — database selector, document tables, rules editor, storage browser
 - **TypeScript SDK** — zero dependencies, works everywhere
 
 ## Docs
@@ -57,13 +60,14 @@ source setup.sh && ez up
 ## Roadmap
 
 - [x] Document CRUD + queries + real-time
-- [x] Auth (BetterAuth)
-- [x] Admin console
-- [x] SDK + Docker image
-- [ ] File storage
+- [x] Auth (BetterAuth) + OAuth providers
+- [x] Custom roles, claims, user management
+- [x] Per-collection permissions with read/write split + claim-based filters
+- [x] File storage with bucket permissions
+- [x] Multi-database support
+- [x] Admin console (database selector, rules editor, storage browser)
+- [x] SDK + Docker image + CI/CD
 - [ ] Full-text search (Meilisearch)
-- [ ] OAuth providers
-- [ ] Gradual type system
 - [ ] Backups
 
 ## License
