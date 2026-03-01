@@ -1,8 +1,8 @@
-# File Storage — Implementation Plan
+# File Storage
 
-**Status:** Not yet built. This supersedes the BYTEA approach described in VISION.md.
+**Status:** Built. Files on disk, metadata in Postgres.
 
-**Decision:** Files live on the filesystem (Docker volume), not in Postgres. Metadata lives in Postgres. This avoids bloating the database, keeps `pg_dump` fast for document backups, and lets nginx serve files directly.
+Files live on the filesystem (Docker volume at `STORAGE_PATH`, default `/data/files/`), not in Postgres. Metadata lives in Postgres (`_ezbase_files` table in `public` schema). This avoids bloating the database, keeps `pg_dump` fast for document backups, and means Bun's native `sendfile()` handles streaming.
 
 ---
 
@@ -102,16 +102,20 @@ This table is small and fast. Queries like "list all files in avatars/" or "tota
 Storage is a sibling to documents, just like in Firebase:
 
 ```typescript
-const ez = new EZBase({ url: 'http://localhost:7003' })
+const ez = new EzBase({ url: 'http://localhost:7003' })
 
-// Upload a file
-const ref = await ez.storage('avatars').upload('user123.jpg', file)
-// ref = { path: 'avatars/user123.jpg', url: '...', size: 48210, mimeType: 'image/jpeg' }
+// Upload a file (auto-generated path)
+const meta = await ez.storage('avatars').upload(file)
+// → { path: 'avatars/m5x8k2j_photo.png', url: '/api/storage/avatars/m5x8k2j_photo.png', ... }
 
-// Upload with custom path
-const ref = await ez.storage('receipts').upload('2024/march/invoice.pdf', pdfFile)
+// Upload to specific path
+const meta = await ez.storage('avatars').upload('user123.jpg', file)
+// → { path: 'avatars/user123.jpg', url: '/api/storage/avatars/user123.jpg', size: 48210, mimeType: 'image/jpeg', ... }
 
-// Get download URL
+// Upload with nested path
+const meta = await ez.storage('receipts').upload('2024/march/invoice.pdf', pdfFile)
+
+// Get download URL (no network call)
 const url = ez.storage('avatars').file('user123.jpg').url
 // → 'http://localhost:7003/api/storage/avatars/user123.jpg'
 
@@ -123,22 +127,17 @@ await ez.storage('avatars').file('user123.jpg').delete()
 
 // List files in a bucket
 const files = await ez.storage('avatars').list()
-// → [{ path, size, mimeType, createdAt, updatedAt }, ...]
-
-// Get file metadata without downloading
-const info = await ez.storage('avatars').file('user123.jpg').info()
-// → { path, size, mimeType, createdAt, updatedAt }
+// → [{ path, bucket, filename, size, mimeType, uploadedBy, created, updated, url }, ...]
 ```
 
 ### SDK implementation
 
-New `StorageBucket` class returned by `ez.storage('bucketName')`:
+`StorageBucket` class returned by `ez.storage('bucketName')`:
 
 ```typescript
 class StorageBucket {
-  constructor(private client: EZBase, private bucket: string)
-
-  async upload(path: string, file: File | Blob | Buffer): Promise<FileRef>
+  async upload(file: File | Blob): Promise<FileMeta>                    // auto-generated path
+  async upload(path: string, file: File | Blob): Promise<FileMeta>     // specific path
   async list(): Promise<FileMeta[]>
   file(path: string): FileHandle
 }
@@ -147,21 +146,18 @@ class FileHandle {
   get url(): string               // computed, no network call
   async download(): Promise<Blob>
   async delete(): Promise<void>
-  async info(): Promise<FileMeta>
 }
 
 interface FileMeta {
-  path: string
-  bucket: string
-  filename: string
-  size: number
-  mimeType: string
-  createdAt: string
-  updatedAt: string
-}
-
-interface FileRef extends FileMeta {
-  url: string
+  path: string           // 'avatars/user123.jpg'
+  bucket: string         // 'avatars'
+  filename: string       // 'user123.jpg'
+  size: number           // bytes
+  mimeType: string       // 'image/jpeg'
+  uploadedBy: string | null  // user ID or null (admin uploads)
+  created: number        // Unix timestamp (ms)
+  updated: number        // Unix timestamp (ms)
+  url: string            // '/api/storage/avatars/user123.jpg'
 }
 ```
 
@@ -237,12 +233,22 @@ For v1, keep it simple:
 
 ---
 
+## Implementation notes
+
+Deviations from the original plan above:
+
+- **Timestamps** use BIGINT (ms since epoch), consistent with document tables — not TIMESTAMPTZ as originally proposed
+- **`uploaded_by`** column added to `_ezbase_files` for owner-based access control
+- **Bucket permissions** implemented via `rules.json` `buckets` section — same access levels as collections (`public`, `authenticated`, `admin`, `owner`, `role:*`)
+- **`owner` on a bucket** means only the uploader can read/delete their files
+- **No claim-based filters** for buckets in v1 — keeps it simple (strings only, no filter objects)
+- **`FileMeta` timestamps** are `created`/`updated` (not `createdAt`/`updatedAt`) to match document shape
+
 ## What this plan does NOT cover (future)
 
 - **Image transforms** (resize, thumbnail generation) — could add later with sharp
-- **Access control** (public vs authenticated vs per-user files) — depends on auth system being built first
 - **CDN / caching headers** — nginx can add cache-control headers, but not in v1
-- **Presigned URLs** — not needed until auth exists
+- **Presigned URLs** — not needed for self-hosted
 - **Multipart upload for huge files** — not needed at ezbase's target scale
 - **Real-time file events via SSE** — could publish to existing pub/sub, but low priority
 

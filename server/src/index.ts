@@ -7,7 +7,8 @@ import { initConfig } from './config.js'
 import { extractAuth } from './middleware.js'
 import { legacyRoutes, dbRoutes, adminRoutes } from './routes.js'
 import { auth, initAuth } from './auth.js'
-import { permissions, dbPermissions } from './permissions.js'
+import { loadRules, watchRules, rulesRoutes, legacyPermissionRoutes, dbLegacyPermissionRoutes } from './rules.js'
+import { storageRoutes } from './storage.js'
 
 const app = new Hono()
 
@@ -32,9 +33,15 @@ app.use('/api/db/:database', async (c, next) => {
   return next()
 })
 
-// Permission routes (legacy default db + database-aware)
-app.route('/api', permissions)
-app.route('/api/db/:database', dbPermissions)
+// Storage routes (file uploads/downloads)
+app.route('/api', storageRoutes)
+
+// Rules API routes (admin-only)
+app.route('/api', rulesRoutes)
+
+// Legacy permission routes (SDK compat)
+app.route('/api', legacyPermissionRoutes)
+app.route('/api/db/:database', dbLegacyPermissionRoutes)
 
 // Collection routes (legacy default db + database-aware)
 app.route('/api', legacyRoutes)
@@ -45,7 +52,7 @@ app.route('/api', adminRoutes)
 
 app.onError((err, c) => {
   console.error(err)
-  return c.json({ error: err.message }, 500)
+  return c.json({ error: 'Internal server error' }, 500)
 })
 
 const port = parseInt(process.env.PORT || '8080')
@@ -54,6 +61,8 @@ initConfig()
 
 // Migration must run before init (which creates db_default)
 await migrateToSchemas()
+await loadRules()
+watchRules()
 await Promise.all([init(), initPubSub(), initAuth()])
 
 console.log(`ezbase running on :${port}`)

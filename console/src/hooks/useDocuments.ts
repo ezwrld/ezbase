@@ -7,7 +7,7 @@ export interface EzDocument {
   updated: number
 }
 
-export function useDocuments(database: string, collection: string | null) {
+export function useDocuments(database: string, collection: string | null, adminKey: string) {
   const [documents, setDocuments] = useState<EzDocument[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -25,7 +25,7 @@ export function useDocuments(database: string, collection: string | null) {
     setLoading(true)
     setError(null)
 
-    const url = `${basePath}/collections/${encodeURIComponent(collection)}/sse`
+    const url = `${basePath}/collections/${encodeURIComponent(collection)}/sse?token=${encodeURIComponent(adminKey)}`
     const es = new EventSource(url)
 
     es.addEventListener('snapshot', (e: MessageEvent) => {
@@ -50,7 +50,7 @@ export function useDocuments(database: string, collection: string | null) {
     return () => {
       es.close()
     }
-  }, [basePath, collection])
+  }, [basePath, collection, adminKey])
 
   return { documents, loading, error }
 }

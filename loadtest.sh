@@ -4,6 +4,8 @@
 # Usage: ./loadtest.sh [docs_per_wave] [waves]
 #   docs_per_wave: how many docs to create per wave (default: 20)
 #   waves:         how many create→update→delete cycles (default: 5)
+#
+# Set ADMIN_KEY env var or pass via: ADMIN_KEY=... ./loadtest.sh
 
 set -eo pipefail
 
@@ -11,6 +13,20 @@ API="http://localhost:7003/api"
 COL="loadtest"
 DOCS_PER_WAVE="${1:-20}"
 WAVES="${2:-5}"
+AUTH_HEADER=""
+
+if [ -n "$ADMIN_KEY" ]; then
+  AUTH_HEADER="-H \"Authorization: Bearer $ADMIN_KEY\""
+fi
+
+# Helper: curl with optional auth
+acurl() {
+  if [ -n "$ADMIN_KEY" ]; then
+    curl -s -H "Authorization: Bearer $ADMIN_KEY" "$@"
+  else
+    curl -s "$@"
+  fi
+}
 
 ts() { python3 -c "import time; print(int(time.time()*1000))"; }
 
@@ -18,14 +34,15 @@ echo "=== ezbase load test ==="
 echo "collection:    $COL"
 echo "docs per wave: $DOCS_PER_WAVE"
 echo "waves:         $WAVES"
+echo "admin key:     ${ADMIN_KEY:+(set)}"
 echo ""
 
 # Clean slate
 echo "[cleanup] deleting existing $COL docs..."
-curl -s "$API/collections/$COL" \
+acurl "$API/collections/$COL" \
   | python3 -c "import sys,json; [print(d['id']) for d in json.load(sys.stdin)]" 2>/dev/null \
   | while read -r id; do
-      curl -s -X DELETE "$API/collections/$COL/$id" -o /dev/null &
+      acurl -X DELETE "$API/collections/$COL/$id" -o /dev/null &
     done
 wait
 echo "[cleanup] done"
@@ -39,7 +56,7 @@ for wave in $(seq 1 "$WAVES"); do
   echo "[create] spawning $DOCS_PER_WAVE docs..."
   for i in $(seq 1 "$DOCS_PER_WAVE"); do
     (
-      resp=$(curl -s -X POST "$API/collections/$COL" \
+      resp=$(acurl -X POST "$API/collections/$COL" \
         -H 'Content-Type: application/json' \
         -d "{\"wave\":$wave,\"index\":$i,\"tag\":\"created\",\"ts\":$(ts)}")
       echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null >> "$idfile"
@@ -61,7 +78,7 @@ for wave in $(seq 1 "$WAVES"); do
   # UPDATE: patch every doc in parallel
   echo "[update] patching all ${#ids[@]} docs..."
   for id in "${ids[@]}"; do
-    curl -s -X PATCH "$API/collections/$COL/$id" \
+    acurl -X PATCH "$API/collections/$COL/$id" \
       -H 'Content-Type: application/json' \
       -d "{\"tag\":\"updated\",\"wave_update\":$wave,\"ts\":$(ts)}" \
       -o /dev/null &
@@ -74,7 +91,7 @@ for wave in $(seq 1 "$WAVES"); do
   echo "[rapid]  10 rapid updates on ${#rapid_targets[@]} docs..."
   for _ in $(seq 1 10); do
     for id in "${rapid_targets[@]}"; do
-      curl -s -X PATCH "$API/collections/$COL/$id" \
+      acurl -X PATCH "$API/collections/$COL/$id" \
         -H 'Content-Type: application/json' \
         -d "{\"rapid\":true,\"counter\":$RANDOM,\"ts\":$(ts)}" \
         -o /dev/null &
@@ -87,7 +104,7 @@ for wave in $(seq 1 "$WAVES"); do
   half=$(( ${#ids[@]} / 2 ))
   echo "[delete] removing $half docs..."
   for id in "${ids[@]:0:$half}"; do
-    curl -s -X DELETE "$API/collections/$COL/$id" -o /dev/null &
+    acurl -X DELETE "$API/collections/$COL/$id" -o /dev/null &
   done
   wait
   echo "[delete] done"
@@ -96,7 +113,7 @@ for wave in $(seq 1 "$WAVES"); do
 done
 
 # Final stats
-count=$(curl -s "$API/collections/$COL" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
+count=$(acurl "$API/collections/$COL" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
 echo "=== done ==="
 echo "remaining docs in '$COL': $count"
 echo "open http://localhost:7003/console/ and click '$COL' to watch"

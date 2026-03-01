@@ -181,7 +181,7 @@ const unsub = ez.collection('todos').onSnapshot(
 
 ## Auth
 
-### Sign up and sign in
+### Email/password sign in
 
 ```ts
 // Create an account
@@ -202,11 +202,39 @@ ez.auth.signOut()
 
 After sign-in, the token is automatically attached to all subsequent requests. No manual header management needed.
 
+### OAuth sign in
+
+Requires provider env vars set on the server (e.g. `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_URL`).
+
+```ts
+// Redirect to OAuth provider (browser-only)
+ez.auth.signInWithProvider('google', {
+  callbackURL: '/dashboard',
+  errorCallbackURL: '/login?error=1',  // optional
+})
+
+// After redirect, restore session on page load
+const session = await ez.auth.getSession()
+if (session) {
+  console.log('Welcome', session.user.email)
+}
+
+// Check which providers the server supports
+const { providers, emailPassword } = await ez.auth.listProviders()
+// → { providers: ['google', 'github'], emailPassword: true }
+```
+
+Supported providers: `google`, `github`, `microsoft`, `apple`.
+
+Account linking is automatic — same email across providers = same user.
+
 ### Current user
 
 ```ts
 const user = ez.auth.currentUser
-// { id, email, role, created, updated } or null
+// { id, email, role, claims, name?, image?, created, updated } or null
+// user.role    → "user" (default), "admin", "mover", etc.
+// user.claims  → { orgId: "auburn", tier: "pro" }
 ```
 
 ### Listen to auth state changes
@@ -221,17 +249,73 @@ const unsub = ez.auth.onAuthStateChanged((user) => {
 })
 ```
 
-## Permission Levels
+### Admin: User Management
 
-Collections have three permission levels, set via the admin console or API:
+Requires admin key.
 
-| Level | Anonymous | Authenticated user | Admin |
-|-------|-----------|-------------------|-------|
-| `public` (default) | Full access | Full access | Full access |
-| `authenticated` | Blocked (401) | Full access | Full access |
-| `admin` | Blocked (401) | Blocked (403) | Full access |
+```ts
+const admin = new EzBase({ url: '...', adminKey: '...' })
 
-New collections default to `public`. Existing data and behavior is unchanged until you set a stricter level.
+await admin.auth.listUsers({ limit: 50, offset: 0 })     // paginated user list
+await admin.auth.getUser('user-123')                       // single user
+await admin.auth.setRole('user-123', 'mover')              // set role
+await admin.auth.setClaims('user-123', { orgId: 'auburn' }) // replace claims
+await admin.auth.mergeClaims('user-123', { tier: 'pro' })  // merge (null deletes key)
+await admin.auth.deleteUser('user-789')                     // delete user + sessions
+```
+
+## Rules & Permissions
+
+Permissions are defined in `rules.json`. Managed via console editor, mounted file, or SDK.
+
+### rules.json format
+
+```json
+{
+  "default": "public",
+  "collections": {
+    "feed": { "read": "public", "write": "authenticated" },
+    "orders": {
+      "read": { "access": "role:mover", "filter": { "orgId": "claims.orgIds" } },
+      "write": "admin"
+    },
+    "user_notes": "owner",
+    "admin_dashboard": "admin"
+  }
+}
+```
+
+| Level | Anonymous | Authenticated user | Matching role | Admin |
+|-------|-----------|-------------------|---------------|-------|
+| `public` (default) | Full access | Full access | Full access | Full access |
+| `authenticated` | Blocked (401) | Full access | Full access | Full access |
+| `role:<name>` | Blocked (401) | Blocked (403) | Full access | Full access |
+| `owner` | Blocked (401) | Own docs only | Own docs only | Full access |
+| `admin` | Blocked (401) | Blocked (403) | Blocked (403) | Full access |
+
+- **Read/write split**: `{ "read": "public", "write": "authenticated" }` — separate permissions for reads vs writes. Write = create, update, delete.
+- **`owner`**: Sugar for `{ access: "authenticated", filter: { userId: "auth.id" } }`
+- **`role:<name>`**: Only users with matching role can access
+- **Filters**: Map doc fields to `auth.id` or `claims.*`. Array claims use SQL `ANY()`, multiple filters AND'd.
+
+### Rules SDK methods
+
+```ts
+const admin = new EzBase({ url: '...', adminKey: '...' })
+
+// Get rules
+const { rules, readonly } = await admin.getRules()
+
+// Replace rules (supports read/write split)
+await admin.setRules({
+  default: { read: 'public', write: 'authenticated' },
+  collections: { feed: 'public', orders: { read: 'authenticated', write: 'admin' } },
+})
+
+// Set permission (string or object with filter)
+await admin.setPermission('orders', { access: 'role:mover', filter: { orgId: 'claims.orgIds' } })
+await admin.setPermission('notes', 'authenticated')
+```
 
 ## TypeScript Generics
 
@@ -273,10 +357,50 @@ await ez.listDatabases()                                   // ['default', 'aubur
 await ez.listCollections()                                 // default db collections
 await ez.database('auburn').listCollections()               // auburn's collections
 
-await ez.setPermission('todos', 'authenticated')            // default db
-await ez.database('auburn').setPermission('orders', 'admin')
+await ez.setPermission('todos', 'authenticated')                                      // simple
+await ez.setPermission('orders', { access: 'role:mover', filter: { orgId: 'claims.orgIds' } })  // with filter
+await ez.database('auburn').setPermission('orders', 'admin')                            // named db
 await ez.getPermission('todos')
 // → { database: 'default', collection: 'todos', level: 'authenticated' }
+
+// Rules management
+await ez.getRules()       // → { rules: {...}, readonly: false }
+await ez.setRules({ default: 'authenticated', collections: { feed: 'public' } })
+```
+
+## File Storage
+
+Upload, download, list, and delete files. Bucket permissions controlled via `rules.json`.
+
+```ts
+// Upload (auto-generated path)
+const meta = await ez.storage('avatars').upload(file)
+// → { path: 'avatars/m5x8k2j_photo.png', url: '/api/storage/...', size, mimeType, ... }
+
+// Upload to specific path
+const meta = await ez.storage('avatars').upload('profile.jpg', file)
+
+// Get URL (no network call — computed from base URL)
+const url = ez.storage('avatars').file('profile.jpg').url
+
+// Download as blob
+const blob = await ez.storage('avatars').file('profile.jpg').download()
+
+// List all files in a bucket
+const files = await ez.storage('avatars').list()
+
+// Delete file (disk + metadata)
+await ez.storage('avatars').file('profile.jpg').delete()
+```
+
+`FileMeta` shape:
+
+```ts
+{
+  path: string, bucket: string, filename: string,
+  size: number, mimeType: string, uploadedBy: string | null,
+  created: number, updated: number, url: string
+}
 ```
 
 ## Exports
@@ -284,7 +408,7 @@ await ez.getPermission('todos')
 ```ts
 import { EzBase } from '@ezwrld/ezbase'
 // or
-import { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient } from '@ezwrld/ezbase'
+import { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient, StorageBucket, FileHandle } from '@ezwrld/ezbase'
 // types
-import type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser } from '@ezwrld/ezbase'
+import type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, ReadWriteRule } from '@ezwrld/ezbase'
 ```

@@ -5,6 +5,7 @@ import { sql, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db
 import { generateId } from './id.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { requirePermission } from './middleware.js'
+import type { AppliedFilter } from './rules.js'
 
 // ── Helpers ───────────────────────────────────────────────────
 function formatDoc(row: Record<string, unknown>) {
@@ -35,16 +36,42 @@ function sanitizeField(field: string): string {
   return field
 }
 
+function docMatchesFilters(data: Record<string, unknown>, filters: AppliedFilter[]): boolean {
+  for (const f of filters) {
+    const docValue = String(data[f.field] ?? '')
+    if (f.values) {
+      if (!f.values.includes(docValue)) return false
+    } else if (f.value !== null) {
+      if (docValue !== f.value) return false
+    }
+  }
+  return true
+}
+
 function buildQuery(
   database: string,
   collection: string,
   whereParam?: string,
   orderBy?: string,
   order?: string,
-  limitParam?: string
+  limitParam?: string,
+  docFilters?: AppliedFilter[]
 ) {
   let query = `SELECT * FROM db_${database}.col_${collection} WHERE true`
   const params: unknown[] = []
+
+  if (docFilters) {
+    for (const f of docFilters) {
+      const field = sanitizeField(f.field)
+      if (f.values) {
+        params.push(f.values)
+        query += ` AND data->>'${field}' = ANY($${params.length})`
+      } else if (f.value !== null) {
+        params.push(f.value)
+        query += ` AND data->>'${field}' = $${params.length}`
+      }
+    }
+  }
 
   if (whereParam) {
     const wheres: [string, string, unknown][] = JSON.parse(whereParam)
@@ -97,15 +124,22 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
   const perm = requirePermission(getDatabase)
 
-  // Permission middleware for collection routes
-  app.use('/collections/:collection', perm('access'))
-  app.use('/collections/:collection/*', perm('access'))
+  // Permission middleware — GET = read, everything else = write
+  app.use('/collections/:collection', async (c, next) => {
+    const action = c.req.method === 'GET' ? 'read' : 'write'
+    return perm(action)(c, next)
+  })
+  app.use('/collections/:collection/*', async (c, next) => {
+    const action = c.req.method === 'GET' ? 'read' : 'write'
+    return perm(action)(c, next)
+  })
 
   // ── SSE: document-level subscription ──────────────────────────
   app.get('/collections/:collection/:id/sse', async (c) => {
     const collection = c.req.param('collection')
     const id = c.req.param('id')
     const database = getDatabase(c)
+    const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
     await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
 
@@ -114,7 +148,10 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         const rows = await sql`
           SELECT * FROM ${table} WHERE id = ${id}
         `
-        const doc = rows.length > 0 ? formatDoc(rows[0]) : null
+        let doc = rows.length > 0 ? formatDoc(rows[0]) : null
+        if (doc && docFilters && !docMatchesFilters(doc.data as Record<string, unknown>, docFilters)) {
+          doc = null
+        }
         await stream.writeSSE({ event: 'snapshot', data: JSON.stringify(doc) })
       }
 
@@ -143,6 +180,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const orderBy = c.req.query('orderBy')
     const order = c.req.query('order')
     const limitParam = c.req.query('limit')
+    const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
 
     return streamSSE(c, async (stream) => {
       const sendSnapshot = async () => {
@@ -152,7 +190,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
           whereParam,
           orderBy,
           order,
-          limitParam
+          limitParam,
+          docFilters
         )
         const rows = await sql.unsafe(query, params as any[])
         await stream.writeSSE({
@@ -213,13 +252,15 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const database = getDatabase(c)
     await ensureCollection(database, collection)
 
+    const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
     const { query, params } = buildQuery(
       database,
       collection,
       c.req.query('where'),
       c.req.query('orderBy'),
       c.req.query('order'),
-      c.req.query('limit')
+      c.req.query('limit'),
+      docFilters
     )
     const rows = await sql.unsafe(query, params as any[])
     return c.json(rows.map(formatDoc))
@@ -238,6 +279,14 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     if (rows.length === 0) {
       return c.json({ error: 'Document not found' }, 404)
     }
+    // Filter check — return 404 (not 403) to avoid leaking existence
+    const singleFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    if (singleFilters) {
+      const data = rows[0].data as Record<string, unknown>
+      if (!docMatchesFilters(data, singleFilters)) {
+        return c.json({ error: 'Document not found' }, 404)
+      }
+    }
     return c.json(formatDoc(rows[0]))
   })
 
@@ -247,6 +296,18 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const database = getDatabase(c)
     await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
+
+    // Filter check on existing doc before overwrite
+    const putFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    if (putFilters) {
+      const existing = await sql`SELECT data FROM ${table} WHERE id = ${id}`
+      if (existing.length > 0) {
+        const data = existing[0].data as Record<string, unknown>
+        if (!docMatchesFilters(data, putFilters)) {
+          return c.json({ error: 'Document not found' }, 404)
+        }
+      }
+    }
 
     const body = await c.req.json()
     const now = Date.now()
@@ -271,6 +332,17 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const database = getDatabase(c)
     await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
+
+    // Filter check before update
+    const patchFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    if (patchFilters) {
+      const existing = await sql`SELECT data FROM ${table} WHERE id = ${id}`
+      if (existing.length === 0) return c.json({ error: 'Document not found' }, 404)
+      const data = existing[0].data as Record<string, unknown>
+      if (!docMatchesFilters(data, patchFilters)) {
+        return c.json({ error: 'Document not found' }, 404)
+      }
+    }
 
     const body = await c.req.json()
     const now = Date.now()
@@ -297,6 +369,17 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
 
+    // Filter check before delete
+    const deleteFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    if (deleteFilters) {
+      const existing = await sql`SELECT data FROM ${table} WHERE id = ${id}`
+      if (existing.length === 0) return c.json({ error: 'Document not found' }, 404)
+      const data = existing[0].data as Record<string, unknown>
+      if (!docMatchesFilters(data, deleteFilters)) {
+        return c.json({ error: 'Document not found' }, 404)
+      }
+    }
+
     const rows = await sql`
       DELETE FROM ${table} WHERE id = ${id}
       RETURNING *
@@ -318,7 +401,7 @@ const adminRoutes = new Hono()
 
 adminRoutes.get('/health', (c) => c.json({ status: 'ok' }))
 
-// List databases — public (console needs it without auth)
+// List databases
 adminRoutes.get('/databases', async (c) => {
   const rows = await sql`
     SELECT schema_name FROM information_schema.schemata

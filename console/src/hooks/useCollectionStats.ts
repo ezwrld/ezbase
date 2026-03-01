@@ -6,7 +6,7 @@ export interface CollectionStats {
   size: number // approximate bytes (JSON-encoded data)
 }
 
-export function useCollectionStats(database: string, collections: string[]) {
+export function useCollectionStats(database: string, collections: string[], adminKey: string) {
   const [stats, setStats] = useState<Map<string, CollectionStats>>(new Map())
   const sourcesRef = useRef<Map<string, EventSource>>(new Map())
 
@@ -24,7 +24,7 @@ export function useCollectionStats(database: string, collections: string[]) {
 
     // Open SSE for each collection
     for (const name of collections) {
-      const url = `${basePath}/collections/${encodeURIComponent(name)}/sse`
+      const url = `${basePath}/collections/${encodeURIComponent(name)}/sse?token=${encodeURIComponent(adminKey)}`
       const es = new EventSource(url)
       sources.set(name, es)
 
@@ -53,7 +53,7 @@ export function useCollectionStats(database: string, collections: string[]) {
       }
       sources.clear()
     }
-  }, [basePath, collections.join(',')])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [basePath, adminKey, collections.join(',')])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return Array.from(stats.values())
 }

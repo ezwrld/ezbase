@@ -49,9 +49,9 @@ npm install @ezwrld/ezbase
 ### 3. Use it
 
 ```typescript
-import { EZBase } from '@ezwrld/ezbase'
+import { EzBase } from '@ezwrld/ezbase'
 
-const ez = new EZBase({ url: 'http://localhost:7003' })
+const ez = new EzBase({ url: 'http://localhost:7003' })
 
 await ez.collection('todos').doc('abc').set({ title: 'Ship it', done: false })
 const todo = await ez.collection('todos').doc('abc').get()
@@ -72,7 +72,7 @@ All data lives under `/data`:
 ```
 /data/
 ├── postgres/    # pg data directory
-└── files/       # uploaded files (future)
+└── files/       # uploaded files
 ```
 
 Mount one volume at `/data` and everything persists.

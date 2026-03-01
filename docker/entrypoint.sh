@@ -23,6 +23,12 @@ su postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D /data/postgres stop -w"
 # ---------- File storage dir ----------
 mkdir -p /data/files
 
+# ---------- Rules file ----------
+if [ ! -f /data/rules.json ]; then
+    echo '{ "default": "public" }' > /data/rules.json
+    echo "ezbase: created default rules.json"
+fi
+
 # ---------- Start everything ----------
 echo "ezbase: starting services..."
 exec supervisord -c /etc/supervisor/conf.d/ezbase.conf

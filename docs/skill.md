@@ -27,15 +27,21 @@ services:
       - "7003:7003"
     volumes:
       - ezbase-data:/data
-    environment:
-      ADMIN_KEY: "your-secret-admin-key"
-      BETTER_AUTH_SECRET: "your-secret-at-least-32-chars-long!!"
 
 volumes:
   ezbase-data:
 ```
 
-One service, one port (7003), one volume (`/data`). Console UI at `http://localhost:7003/console`.
+Zero config — just start it. One service, one port (7003), one volume (`/data`). Console UI at `http://localhost:7003/console`.
+
+```bash
+# Get your auto-generated admin key from the logs
+docker compose logs ezbase | grep ADMIN_KEY
+
+# Or set your own
+environment:
+  ADMIN_KEY: "my-secret-key"
+```
 
 ### 2. Install the SDK
 
@@ -233,8 +239,10 @@ const { token, user } = await ez.auth.signIn({
   password: 'min8chars',
 })
 
-// Current user — { id, email, role } or null
+// Current user — { id, email, role, claims } or null
 const user = ez.auth.currentUser
+// user.role    → "user" (default), "admin", "mover", etc.
+// user.claims  → { orgId: "auburn", region: "southeast" }
 
 // Sign out
 await ez.auth.signOut()
@@ -251,6 +259,93 @@ ez.auth.restoreSession(savedToken, savedUser)
 
 After `signUp` or `signIn`, the SDK auto-attaches the session token to all requests. No manual header management.
 
+### OAuth Providers
+
+ezbase supports OAuth sign-in (Google, GitHub, Microsoft, Apple) via BetterAuth. Providers are enabled by setting env vars — no code changes to the server.
+
+**Setup:**
+
+1. Create an OAuth app with your provider (e.g. Google Cloud Console, GitHub Developer Settings)
+2. Set the callback URL to `{your-ezbase-url}/api/auth/callback/{provider}` (e.g. `https://myapp.com/api/auth/callback/google`)
+3. Set env vars on your ezbase instance:
+   ```
+   BETTER_AUTH_URL=https://myapp.com          # your public URL (required for OAuth)
+   GOOGLE_CLIENT_ID=your-client-id
+   GOOGLE_CLIENT_SECRET=your-client-secret
+   ```
+4. Restart the container
+
+**SDK usage:**
+
+```typescript
+// Redirect to OAuth provider (browser-only)
+ez.auth.signInWithProvider('google', {
+  callbackURL: '/dashboard',           // where to redirect after sign-in
+  errorCallbackURL: '/login?error=1',  // optional: where to redirect on error
+})
+// → browser redirects to Google → user approves → redirects back to callbackURL
+
+// After redirect, restore session on page load
+const session = await ez.auth.getSession()
+if (session) {
+  console.log('Welcome', session.user.email)
+  // session.token and session.user are set — SDK auto-attaches token to requests
+}
+
+// Check which providers are available
+const { providers, emailPassword } = await ez.auth.listProviders()
+// → { providers: ['google', 'github'], emailPassword: true }
+```
+
+**Account linking:** If a user signs up with email and later signs in with Google using the same email, BetterAuth auto-links the accounts — same user, two auth methods. Google, GitHub, Microsoft, and Apple are trusted providers (they verify emails).
+
+**Supported providers:** `google`, `github`, `microsoft`, `apple`
+
+**Env vars per provider:**
+
+| Provider | Client ID env | Client Secret env |
+|----------|--------------|-------------------|
+| Google | `GOOGLE_CLIENT_ID` | `GOOGLE_CLIENT_SECRET` |
+| GitHub | `GITHUB_CLIENT_ID` | `GITHUB_CLIENT_SECRET` |
+| Microsoft | `MICROSOFT_CLIENT_ID` | `MICROSOFT_CLIENT_SECRET` |
+| Apple | `APPLE_CLIENT_ID` | `APPLE_CLIENT_SECRET` |
+
+### Custom Claims & Role Management
+
+Users have a `role` (string, default `"user"`) and `claims` (arbitrary JSON metadata). Admin key required for all management methods.
+
+```typescript
+const admin = new EzBase({ url: '...', adminKey: '...' })
+
+// Set user roles
+await admin.auth.setRole('user-123', 'admin')
+await admin.auth.setRole('user-456', 'mover')
+
+// Replace all claims
+await admin.auth.setClaims('user-456', { orgId: 'auburn', region: 'southeast' })
+
+// Merge claims (null deletes a key)
+await admin.auth.mergeClaims('user-456', { tier: 'pro', region: null })
+
+// List users (paginated)
+const users = await admin.auth.listUsers({ limit: 50, offset: 0 })
+
+// Get a single user
+const user = await admin.auth.getUser('user-456')
+
+// Delete a user (removes sessions + accounts too)
+await admin.auth.deleteUser('user-789')
+```
+
+After sign-in, the SDK automatically parses claims:
+
+```typescript
+const ez = new EzBase({ url: '...' })
+await ez.auth.signIn({ email, password })
+console.log(ez.auth.currentUser.role)    // "mover"
+console.log(ez.auth.currentUser.claims)  // { orgId: "auburn", tier: "pro" }
+```
+
 ### TypeScript Generics
 
 ```typescript
@@ -265,30 +360,237 @@ const doc = await todos.add({ title: 'Buy milk', done: false })
 // doc.data is typed as Todo
 ```
 
+### File Storage
+
+Upload, download, list, and delete files. Files are stored on disk; metadata in Postgres. Bucket permissions controlled via `rules.json`.
+
+```typescript
+// Upload a file (auto-generated path)
+const meta = await ez.storage('avatars').upload(file)
+// → { path: 'avatars/m5x8k2j_photo.png', url: '/api/storage/avatars/m5x8k2j_photo.png', size: 48210, ... }
+
+// Upload to specific path
+const meta = await ez.storage('avatars').upload('profile.jpg', file)
+// → { path: 'avatars/profile.jpg', ... }
+
+// Get URL (no network call)
+const url = ez.storage('avatars').file('profile.jpg').url
+
+// Download
+const blob = await ez.storage('avatars').file('profile.jpg').download()
+
+// List files in a bucket
+const files = await ez.storage('avatars').list()
+
+// Delete
+await ez.storage('avatars').file('profile.jpg').delete()
+```
+
+`FileMeta` shape returned by upload and list:
+
+```typescript
+{
+  path: string         // 'avatars/profile.jpg'
+  bucket: string       // 'avatars'
+  filename: string     // 'profile.jpg'
+  size: number         // bytes
+  mimeType: string     // 'image/jpeg'
+  uploadedBy: string | null  // user ID or null
+  created: number      // Unix timestamp (ms)
+  updated: number      // Unix timestamp (ms)
+  url: string          // '/api/storage/avatars/profile.jpg'
+}
+```
+
+#### Browser upload (React example)
+
+```typescript
+const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const file = e.target.files?.[0]
+  if (!file) return
+
+  try {
+    // Upload with user-specific path — uploadedBy is set automatically from auth
+    const meta = await ez.storage('avatars').upload(
+      `${ez.auth.currentUser!.id}.jpg`,
+      file
+    )
+    console.log('Uploaded:', meta.url)  // '/api/storage/avatars/user123.jpg'
+  } catch (err: any) {
+    if (err.message.includes('413')) console.error('File too large (max 100MB)')
+    if (err.message.includes('401')) console.error('Not signed in')
+    if (err.message.includes('403')) console.error('Permission denied')
+  }
+}
+```
+
+#### Owner buckets — users only see their files
+
+```typescript
+// rules.json: { "buckets": { "documents": "owner" } }
+
+// User A uploads
+await ez.storage('documents').upload('receipt.pdf', pdfFile)
+// → uploadedBy automatically set to User A's ID
+
+// User A lists files — sees only their uploads
+const myFiles = await ez.storage('documents').list()
+
+// User B can't access User A's files — gets 403
+```
+
+#### Path rules
+
+- Must start with alphanumeric character
+- Allowed characters: `a-z A-Z 0-9 _ - . /`
+- No `..` (directory traversal blocked)
+- No leading or trailing `/`
+- Bucket = first path segment (`avatars/photo.jpg` → bucket `avatars`)
+- Max file size: 100MB (configurable via `EZBASE_MAX_FILE_SIZE` env var)
+
+#### Error responses
+
+| Status | When |
+|--------|------|
+| 201 | Upload success |
+| 400 | Invalid path (bad characters, `..`, etc.) or no file provided |
+| 401 | Anonymous user, bucket requires authentication |
+| 403 | User lacks permission (wrong role, not owner) |
+| 404 | File not found |
+| 413 | File exceeds max size |
+
+#### Bucket permissions in rules.json
+
+```json
+{
+  "default": "public",
+  "collections": { ... },
+  "buckets": {
+    "avatars": "authenticated",
+    "documents": "owner",
+    "public_assets": "public"
+  }
+}
+```
+
+- Same access levels as collections: `public`, `authenticated`, `admin`, `owner`, `role:<name>`
+- `owner` on a bucket = only the uploader can read/delete their files
+- Unlisted buckets fall back to `default`
+- No claim-based filters for buckets — strings only
+
 ### Exports
 
 ```typescript
-import { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient } from '@ezwrld/ezbase'
-import type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser } from '@ezwrld/ezbase'
+import { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient, StorageBucket, FileHandle } from '@ezwrld/ezbase'
+import type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, ReadWriteRule } from '@ezwrld/ezbase'
 ```
 
-## Security & Permissions
+## Rules & Permissions
 
-Every collection has a permission level (default: `public`).
+Permissions are defined in `rules.json` — a single file per ezbase instance. Two ways to manage it:
 
-| Level | Anonymous | Authenticated | Admin |
-|-------|-----------|---------------|-------|
-| `public` | Full access | Full access | Full access |
-| `authenticated` | 401 | Full access | Full access |
-| `admin` | 401 | 403 | Full access |
+1. **Console editor** — open the console, click "Rules", edit and save. Rules persist in `/data/rules.json`.
+2. **Mounted file** — keep `rules.json` in your repo, mount into the container. Console shows read-only mode.
 
-Set via REST (admin key required):
+### rules.json format
 
+```json
+{
+  "default": "public",
+  "collections": {
+    "feed": { "read": "public", "write": "authenticated" },
+    "profiles": { "read": "public", "write": "owner" },
+    "move_orders": {
+      "read": { "access": "role:mover", "filter": { "orgId": "claims.orgIds" } },
+      "write": "admin"
+    },
+    "user_notes": "owner",
+    "admin_dashboard": "admin"
+  }
+}
 ```
-PUT /api/collections/:name/permissions
-Body: { "level": "authenticated" }
-Header: Authorization: Bearer <admin-key>
+
+- **Read/write split:** `{ "read": "public", "write": "authenticated" }` — separate permissions for reads vs writes. Write covers create, update, and delete.
+- **Simple rules:** just a string — `"admin"`, `"public"`, `"authenticated"`, `"owner"`, `"role:mover"` — applies to both read and write.
+- **Complex rules:** `read` and `write` each accept a string level or `{ "access": "...", "filter": { ... } }` object.
+- **Filter** maps doc fields to auth context: `"auth.id"` = user ID, `"claims.foo"` = user's claim value
+- If claim is an array → SQL `ANY()` (IN); if string → `=`
+- Multiple filter keys → AND logic
+- `"owner"` is sugar for `{ "access": "authenticated", "filter": { "userId": "auth.id" } }`
+- `default` is fallback for unlisted collections, also supports `{ "read": "public", "write": "authenticated" }`
+- If only `read` or `write` is specified, the other falls back to `default`
+
+### Permission levels
+
+| Level | Anonymous | Authenticated | Matching role | Admin key / admin role |
+|-------|-----------|---------------|---------------|----------------------|
+| `public` | Full access | Full access | Full access | Full access |
+| `authenticated` | 401 | Full access | Full access | Full access |
+| `role:<name>` | 401 | 403 | Full access | Full access |
+| `owner` | 401 | Own docs only | Own docs only | Full access |
+| `admin` | 401 | 403 | 403 | Full access |
+
+### Managing rules via SDK
+
+```typescript
+const admin = new EzBase({ url: '...', adminKey: '...' })
+
+// Get current rules
+const { rules, readonly } = await admin.getRules()
+
+// Replace entire rules file
+await admin.setRules({
+  default: 'authenticated',
+  collections: {
+    move_orders: { access: 'role:mover', filter: { orgId: 'claims.orgIds' } },
+    public_feed: 'public',
+  },
+})
+
+// Simple permission (legacy compat — writes to rules.json)
+await admin.setPermission('notes', 'authenticated')
+
+// Permission with filter (new)
+await admin.setPermission('orders', { access: 'role:mover', filter: { orgId: 'claims.orgIds' } })
+
+// Get permission level
+const perm = await admin.getPermission('todos')
+// → { database: 'default', collection: 'todos', level: 'authenticated' }
 ```
+
+### End-to-end: claims + rules + auto-filtered queries
+
+```typescript
+// Admin setup
+const admin = new EzBase({ url: '...', adminKey: '...' })
+await admin.auth.setRole('user-456', 'mover')
+await admin.auth.setClaims('user-456', { orgIds: ['auburn', 'oxford'] })
+await admin.setRules({
+  default: 'public',
+  collections: {
+    move_orders: { access: 'role:mover', filter: { orgId: 'claims.orgIds' } },
+  },
+})
+
+// Client — mover signs in, .get() auto-filters by their orgIds
+const ez = new EzBase({ url: '...' })
+await ez.auth.signIn({ email, password })
+const orders = await ez.collection('move_orders').get()
+// → only docs where data.orgId is "auburn" or "oxford"
+```
+
+### Mounted (read-only) rules
+
+```yaml
+# docker-compose.yml
+services:
+  ezbase:
+    image: ghcr.io/ezwrld/ezbase:latest
+    volumes:
+      - ./rules.json:/data/rules.json:ro  # read-only mount
+```
+
+Console shows rules as read-only. `PUT /api/rules` returns 409.
 
 ### Pattern A: "I don't use ezbase auth"
 
@@ -322,6 +624,30 @@ await ez.auth.signIn({ email, password })
 const docs = await ez.collection('notes').get()
 ```
 
+### Pattern C: "Role-based access with claim filters"
+
+Different users see different collections, and within collections they only see docs matching their claims.
+
+```typescript
+// Admin setup — roles + claims + rules
+const admin = new EzBase({ url: '...', adminKey: '...' })
+await admin.auth.setRole('user-456', 'mover')
+await admin.auth.setClaims('user-456', { orgIds: ['auburn', 'oxford'] })
+await admin.setRules({
+  default: 'public',
+  collections: {
+    move_orders: { access: 'role:mover', filter: { orgId: 'claims.orgIds' } },
+    user_notes: 'owner',  // sugar for { access: 'authenticated', filter: { userId: 'auth.id' } }
+  },
+})
+
+// Client — mover signs in, queries auto-filter
+const ez = new EzBase({ url: '...' })
+await ez.auth.signIn({ email, password })
+const orders = await ez.collection('move_orders').get()  // only docs where orgId in ['auburn', 'oxford']
+const notes = await ez.collection('user_notes').get()     // only user's own docs
+```
+
 ## REST API
 
 All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>` header (session token or admin key). SSE endpoints use `?token=<token>` query param.
@@ -351,7 +677,21 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 | POST | `/auth/sign-up/email` | `{ email, password, name }` |
 | POST | `/auth/sign-in/email` | `{ email, password }` |
 | POST | `/auth/sign-out` | — |
-| GET | `/auth/me` | — |
+| GET | `/auth/me` | — (returns `{ id, email, role, claims }`) |
+| GET | `/auth/providers` | — (returns `{ providers, emailPassword }`) |
+| POST | `/auth/sign-in/social` | `{ provider, callbackURL }` (OAuth redirect) |
+| GET | `/auth/callback/:provider` | OAuth callback (handled by BetterAuth) |
+
+### User Management (admin only)
+
+| Method | Path | Body |
+|--------|------|------|
+| GET | `/auth/users` | — (`?limit=&offset=`) |
+| GET | `/auth/users/:id` | — |
+| PUT | `/auth/users/:id/role` | `{ role: "mover" }` |
+| PUT | `/auth/users/:id/claims` | `{ orgId: "123" }` (replaces all claims) |
+| PATCH | `/auth/users/:id/claims` | `{ tier: "pro" }` (merges, `null` deletes key) |
+| DELETE | `/auth/users/:id` | — (deletes user + sessions + accounts) |
 
 ### Databases
 
@@ -373,14 +713,36 @@ All document/collection/permission/SSE routes also work under `/api/db/:database
 | GET | `/db/:db/collections/:col/permissions` | Get permission level in named db (admin) |
 | PUT | `/db/:db/collections/:col/permissions` | Set permission level in named db (admin) |
 
+### File Storage
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/storage` | List bucket names (admin only) |
+| POST | `/storage/:bucket` | Upload file, auto-generated path (multipart/form-data) |
+| POST | `/storage/:bucket/*path` | Upload file to specific path |
+| GET | `/storage/:bucket` | List files in bucket |
+| GET | `/storage/:bucket/*path` | Download file (streams with Content-Type) |
+| DELETE | `/storage/:bucket/*path` | Delete file (disk + metadata) |
+| HEAD | `/storage/:bucket/*path` | File metadata (Content-Type, Content-Length headers) |
+
+Upload request: `POST` with `multipart/form-data`, field name `file`. Returns `FileMeta` JSON (201).
+
+### Rules (admin only)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/rules` | Get rules.json + readonly flag |
+| PUT | `/rules` | Replace entire rules.json (409 if readonly) |
+| PUT | `/rules/collections/:col` | Update single collection rule (409 if readonly) |
+
 ### Other
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | `{ status: "ok" }` |
 | GET | `/collections` | List collection names (default db) |
-| GET | `/collections/:col/permissions` | Get permission level (admin, default db) |
-| PUT | `/collections/:col/permissions` | Set permission level (admin, default db) |
+| GET | `/collections/:col/permissions` | Get permission level (legacy compat, admin) |
+| PUT | `/collections/:col/permissions` | Set permission level (legacy compat, admin) |
 
 ### Query Parameters (GET `/collections/:col`)
 
@@ -395,9 +757,20 @@ All document/collection/permission/SSE routes also work under `/api/db/:database
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ADMIN_KEY` | No | Admin key for bypassing permissions. Auto-generated if not set. |
-| `BETTER_AUTH_SECRET` | Production | Session signing secret. 32+ characters. |
+| `ADMIN_KEY` | No | Admin password. Auto-generated if not set (printed to logs). To rotate: change this and restart. |
+| `BETTER_AUTH_URL` | Only for OAuth | Public URL for OAuth callback URLs (e.g. `https://myapp.com`). |
 | `DATABASE_URL` | No | Only if using external Postgres. |
+| `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
+| `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |
+| `EZBASE_MAX_FILE_SIZE` | No | Max upload size in bytes. Default: 100MB. |
+| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID. Enables "Sign in with Google". |
+| `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret. |
+| `GITHUB_CLIENT_ID` | No | GitHub OAuth client ID. Enables "Sign in with GitHub". |
+| `GITHUB_CLIENT_SECRET` | No | GitHub OAuth client secret. |
+| `MICROSOFT_CLIENT_ID` | No | Microsoft OAuth client ID. Enables "Sign in with Microsoft". |
+| `MICROSOFT_CLIENT_SECRET` | No | Microsoft OAuth client secret. |
+| `APPLE_CLIENT_ID` | No | Apple OAuth client ID. Enables "Sign in with Apple". |
+| `APPLE_CLIENT_SECRET` | No | Apple OAuth client secret. |
 
 ## Collection Name Rules
 

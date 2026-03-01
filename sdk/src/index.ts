@@ -15,12 +15,35 @@ interface EzBaseOptions {
   name?: string
 }
 
+// ── Rules types ──────────────────────────────────────────────
+interface FilterMap { [docField: string]: string }
+interface CollectionRule { access: string; filter?: FilterMap }
+interface ReadWriteRule { read?: string | CollectionRule; write?: string | CollectionRule }
+type RuleValue = string | CollectionRule | ReadWriteRule
+interface RulesFile { default: string | { read?: string; write?: string }; collections?: Record<string, RuleValue>; buckets?: Record<string, string> }
+interface RulesResponse { rules: RulesFile; readonly: boolean }
+
 interface AuthUser {
   id: string
   email: string
   role: string
+  claims: Record<string, unknown>
+  name?: string
+  image?: string
   created?: number
   updated?: number
+}
+
+interface FileMeta {
+  path: string
+  bucket: string
+  filename: string
+  size: number
+  mimeType: string
+  uploadedBy: string | null
+  created: number
+  updated: number
+  url: string
 }
 
 type AuthStateCallback = (user: AuthUser | null) => void
@@ -112,10 +135,12 @@ class AuthClient {
     }
     const data = await res.json()
     this._token = data.session?.token || data.token
+    const u = data.user || data
     this._currentUser = {
-      id: data.user?.id || data.id,
-      email: data.user?.email || data.email,
-      role: data.user?.role || 'user',
+      id: u.id,
+      email: u.email,
+      role: u.role || 'user',
+      claims: typeof u.claims === 'string' ? JSON.parse(u.claims || '{}') : (u.claims || {}),
     }
     this._notify()
     return { token: this._token!, user: this._currentUser! }
@@ -133,10 +158,12 @@ class AuthClient {
     }
     const data = await res.json()
     this._token = data.session?.token || data.token
+    const u = data.user || data
     this._currentUser = {
-      id: data.user?.id || data.id,
-      email: data.user?.email || data.email,
-      role: data.user?.role || 'user',
+      id: u.id,
+      email: u.email,
+      role: u.role || 'user',
+      claims: typeof u.claims === 'string' ? JSON.parse(u.claims || '{}') : (u.claims || {}),
     }
     this._notify()
     return { token: this._token!, user: this._currentUser! }
@@ -159,6 +186,127 @@ class AuthClient {
     this._token = token
     this._currentUser = user
     this._notify()
+  }
+
+  async signInWithProvider(
+    provider: string,
+    opts?: { callbackURL?: string; newUserCallbackURL?: string; errorCallbackURL?: string }
+  ): Promise<void> {
+    const params = new URLSearchParams()
+    params.set('callbackURL', opts?.callbackURL || '/')
+    if (opts?.newUserCallbackURL) params.set('newUserCallbackURL', opts.newUserCallbackURL)
+    if (opts?.errorCallbackURL) params.set('errorCallbackURL', opts.errorCallbackURL)
+    const url = `${this.ez['url']}/api/auth/sign-in/social?${params}`
+
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, callbackURL: opts?.callbackURL || '/', ...(opts?.newUserCallbackURL && { newUserCallbackURL: opts.newUserCallbackURL }), ...(opts?.errorCallbackURL && { errorCallbackURL: opts.errorCallbackURL }) }), redirect: 'manual' })
+    const location = res.headers.get('location')
+    if (location) {
+      if (typeof window !== 'undefined') {
+        window.location.href = location
+      }
+      return
+    }
+
+    // Some BetterAuth versions return JSON with url instead of redirect
+    if (res.ok) {
+      const data = await res.json().catch(() => null)
+      if (data?.url) {
+        if (typeof window !== 'undefined') {
+          window.location.href = data.url
+        }
+        return
+      }
+    }
+
+    throw new Error(`${this.ez['_errorPrefix']}: OAuth sign-in failed for provider '${provider}'`)
+  }
+
+  async getSession(): Promise<{ token: string; user: AuthUser } | null> {
+    const res = await fetch(`${this.ez['url']}/api/auth/get-session`, {
+      credentials: 'include',
+      headers: this.ez['_authHeaders'](),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data?.session?.token || !data?.user) return null
+
+    this._token = data.session.token
+    this._currentUser = {
+      id: data.user.id,
+      email: data.user.email,
+      role: data.user.role || 'user',
+      claims: typeof data.user.claims === 'string' ? JSON.parse(data.user.claims || '{}') : (data.user.claims || {}),
+      ...(data.user.name && { name: data.user.name }),
+      ...(data.user.image && { image: data.user.image }),
+    }
+    this._notify()
+    return { token: this._token!, user: this._currentUser! }
+  }
+
+  async listProviders(): Promise<{ providers: string[]; emailPassword: boolean }> {
+    const res = await fetch(`${this.ez['url']}/api/auth/providers`)
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: failed to list providers`)
+    return res.json()
+  }
+
+  // ── Admin user management ──────────────────────────────────
+
+  async listUsers(opts?: { limit?: number; offset?: number }): Promise<AuthUser[]> {
+    const params = new URLSearchParams()
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit))
+    if (opts?.offset !== undefined) params.set('offset', String(opts.offset))
+    const qs = params.toString()
+    const res = await fetch(`${this.ez['url']}/api/auth/users${qs ? '?' + qs : ''}`, {
+      headers: this.ez._authHeaders(),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async getUser(id: string): Promise<AuthUser> {
+    const res = await fetch(`${this.ez['url']}/api/auth/users/${encodeURIComponent(id)}`, {
+      headers: this.ez._authHeaders(),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async setRole(userId: string, role: string): Promise<AuthUser> {
+    const res = await fetch(`${this.ez['url']}/api/auth/users/${encodeURIComponent(userId)}/role`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      body: JSON.stringify({ role }),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async setClaims(userId: string, claims: Record<string, unknown>): Promise<AuthUser> {
+    const res = await fetch(`${this.ez['url']}/api/auth/users/${encodeURIComponent(userId)}/claims`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      body: JSON.stringify(claims),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async mergeClaims(userId: string, claims: Record<string, unknown>): Promise<AuthUser> {
+    const res = await fetch(`${this.ez['url']}/api/auth/users/${encodeURIComponent(userId)}/claims`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      body: JSON.stringify(claims),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async deleteUser(userId: string): Promise<void> {
+    const res = await fetch(`${this.ez['url']}/api/auth/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      headers: this.ez._authHeaders(),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
   }
 
   onAuthStateChanged(callback: AuthStateCallback): () => void {
@@ -207,7 +355,7 @@ class DatabaseRef {
     return res.json()
   }
 
-  async setPermission(collection: string, level: string): Promise<{ database: string; collection: string; level: string }> {
+  async setPermission(collection: string, level: string | CollectionRule): Promise<{ database: string; collection: string; level: string }> {
     const res = await fetch(
       `${this._basePath()}/collections/${encodeURIComponent(collection)}/permissions`,
       {
@@ -251,6 +399,10 @@ class EzBase {
     return new DatabaseRef(this, name)
   }
 
+  storage(bucket: string): StorageBucket {
+    return new StorageBucket(this, bucket)
+  }
+
   collection<T = Record<string, unknown>>(name: string): CollectionRef<T> {
     return this._defaultDb.collection<T>(name)
   }
@@ -271,8 +423,26 @@ class EzBase {
     return this._defaultDb.getPermission(collection)
   }
 
-  async setPermission(collection: string, level: string) {
+  async setPermission(collection: string, level: string | CollectionRule) {
     return this._defaultDb.setPermission(collection, level)
+  }
+
+  async getRules(): Promise<RulesResponse> {
+    const res = await fetch(`${this.url}/api/rules`, {
+      headers: this._authHeaders(),
+    })
+    if (!res.ok) throw new Error(`${this._errorPrefix}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async setRules(rules: RulesFile): Promise<RulesResponse> {
+    const res = await fetch(`${this.url}/api/rules`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
+      body: JSON.stringify(rules),
+    })
+    if (!res.ok) throw new Error(`${this._errorPrefix}: ${res.status} ${await res.text()}`)
+    return res.json()
   }
 
   /** @internal */
@@ -409,6 +579,64 @@ class DocRef<T = Record<string, unknown>> {
   }
 }
 
+// ── Storage ────────────────────────────────────────────────────
+class StorageBucket {
+  constructor(private ez: EzBase, private bucket: string) {}
+
+  file(path: string): FileHandle {
+    return new FileHandle(this.ez, this.bucket, path)
+  }
+
+  async upload(pathOrFile: string | File | Blob, file?: File | Blob): Promise<FileMeta> {
+    const formData = new FormData()
+    let url: string
+
+    if (typeof pathOrFile === 'string' && file) {
+      formData.append('file', file)
+      url = `${this.ez._getUrl()}/api/storage/${encodeURIComponent(this.bucket)}/${pathOrFile}`
+    } else {
+      formData.append('file', pathOrFile as File | Blob)
+      url = `${this.ez._getUrl()}/api/storage/${encodeURIComponent(this.bucket)}`
+    }
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.ez._authHeaders(),
+      body: formData,
+    })
+    if (!res.ok) throw new Error(`${this.ez._errorPrefix}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
+  async list(): Promise<FileMeta[]> {
+    const res = await fetch(
+      `${this.ez._getUrl()}/api/storage/${encodeURIComponent(this.bucket)}`,
+      { headers: this.ez._authHeaders() }
+    )
+    if (!res.ok) throw new Error(`${this.ez._errorPrefix}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+}
+
+class FileHandle {
+  constructor(private ez: EzBase, private bucket: string, private path: string) {}
+
+  get url(): string {
+    return `${this.ez._getUrl()}/api/storage/${encodeURIComponent(this.bucket)}/${this.path}`
+  }
+
+  async download(): Promise<Blob> {
+    const res = await fetch(this.url, { headers: this.ez._authHeaders() })
+    if (!res.ok) throw new Error(`${this.ez._errorPrefix}: ${res.status}`)
+    return res.blob()
+  }
+
+  async delete(): Promise<void> {
+    const res = await fetch(this.url, { method: 'DELETE', headers: this.ez._authHeaders() })
+    if (!res.ok) throw new Error(`${this.ez._errorPrefix}: ${res.status} ${await res.text()}`)
+  }
+}
+
 // ── Query reference (chainable) ──────────────────────────────
 class QueryRef<T = Record<string, unknown>> {
   private wheres: WhereClause[] = []
@@ -477,6 +705,6 @@ class QueryRef<T = Record<string, unknown>> {
   }
 }
 
-export { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient }
-export type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser }
+export { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient, StorageBucket, FileHandle }
+export type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, RuleValue, ReadWriteRule }
 export default EzBase

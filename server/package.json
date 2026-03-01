@@ -8,8 +8,8 @@
     "start": "bun run src/index.ts"
   },
   "dependencies": {
-    "better-auth": "^1.2.0",
-    "hono": "^4.0.0",
+    "better-auth": "^1.5.0",
+    "hono": "^4.12.0",
     "pg": "^8.13.0",
     "postgres": "^3.4.0"
   },
