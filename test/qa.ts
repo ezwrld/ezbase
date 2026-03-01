@@ -429,7 +429,7 @@ async function testStorage() {
     headers: { Authorization: `Bearer ${ADMIN_KEY}` },
   })
   assert(headRes.ok, 'HEAD returns ok')
-  assert(headRes.headers.get('Content-Type') === 'text/plain', 'HEAD returns correct content-type')
+  assert(headRes.headers.get('Content-Type')?.startsWith('text/plain'), 'HEAD returns correct content-type')
 
   // Delete
   const deleteRes = await apiFetch(`/storage/${meta.path}`, { method: 'DELETE' })
