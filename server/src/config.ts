@@ -17,6 +17,22 @@ export function initConfig() {
 }
 
 /**
+ * Parse BETTER_AUTH_URL into origin + base path.
+ * Supports path-prefix deployments (e.g. http://localhost/ez).
+ *
+ * - http://localhost:7003      → origin: http://localhost:7003, basePath: ''
+ * - http://localhost/ez        → origin: http://localhost,      basePath: '/ez'
+ * - https://sifterforms.com/ez → origin: https://sifterforms.com, basePath: '/ez'
+ */
+export function getPublicUrl() {
+  const port = parseInt(process.env.PORT || '8080')
+  const raw = process.env.BETTER_AUTH_URL || `http://localhost:${port}`
+  const parsed = new URL(raw)
+  const basePath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '')
+  return { origin: parsed.origin, basePath }
+}
+
+/**
  * Auto-generate and persist the BetterAuth session signing secret.
  * - Reads BETTER_AUTH_SECRET env var first (explicit always wins)
  * - Falls back to persisted secret at {STORAGE_PATH}/.auth_secret

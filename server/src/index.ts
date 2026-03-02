@@ -3,14 +3,15 @@ import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { init, migrateToSchemas, validateDatabaseName } from './db.js'
 import { initPubSub } from './pubsub.js'
-import { initConfig } from './config.js'
+import { initConfig, getPublicUrl } from './config.js'
 import { extractAuth } from './middleware.js'
 import { legacyRoutes, dbRoutes, adminRoutes } from './routes.js'
 import { auth, initAuth } from './auth.js'
 import { loadRules, watchRules, rulesRoutes, legacyPermissionRoutes, dbLegacyPermissionRoutes } from './rules.js'
 import { storageRoutes } from './storage.js'
 
-const app = new Hono()
+const { basePath } = getPublicUrl()
+const app = basePath ? new Hono().basePath(basePath) : new Hono()
 
 app.use('*', logger())
 app.use('*', cors())

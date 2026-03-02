@@ -4,7 +4,7 @@ import { bearer } from 'better-auth/plugins'
 import { getMigrations } from 'better-auth/db/migration'
 import pg from 'pg'
 import { sql } from './db.js'
-import { getAuthSecret } from './config.js'
+import { getAuthSecret, getPublicUrl } from './config.js'
 
 // pg.Pool is only here because BetterAuth requires it.
 // All other queries use the postgres.js `sql` instance from db.ts.
@@ -39,8 +39,11 @@ if (process.env.APPLE_CLIENT_ID && process.env.APPLE_CLIENT_SECRET) {
   }
 }
 
+const { origin: publicOrigin, basePath: publicBasePath } = getPublicUrl()
+
 const authOptions = {
-  baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:7003',
+  baseURL: publicOrigin,
+  basePath: `${publicBasePath}/api/auth`,
   database: pool,
   secret: getAuthSecret(),
   emailAndPassword: { enabled: true, minPasswordLength: 8 },
