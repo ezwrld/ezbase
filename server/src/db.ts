@@ -2,7 +2,8 @@ import postgres from 'postgres'
 
 const sql = postgres(
   process.env.DATABASE_URL ||
-    'postgresql://ezbase:ezbase@localhost:5432/ezbase'
+    'postgresql://ezbase:ezbase@localhost:5432/ezbase',
+  { max: 50 }
 )
 
 const COLLECTION_RE = /^[a-zA-Z][a-zA-Z0-9_]{0,62}$/
@@ -77,7 +78,7 @@ export async function ensureCollection(database: string, name: string) {
       updated_at BIGINT NOT NULL
     )
   `
-  await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data)`
+  await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
   await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_created`)} ON ${table} (created_at)`
 
   ensured.add(cacheKey)

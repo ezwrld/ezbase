@@ -64,11 +64,13 @@ function buildQuery(
     for (const f of docFilters) {
       const field = sanitizeField(f.field)
       if (f.values) {
+        // Array claim values — can't use containment, need ANY()
         params.push(f.values)
         query += ` AND data->>'${field}' = ANY($${params.length})`
       } else if (f.value !== null) {
-        params.push(f.value)
-        query += ` AND data->>'${field}' = $${params.length}`
+        // Single value — use @> containment to leverage GIN index
+        params.push(JSON.stringify({ [field]: f.value }))
+        query += ` AND data @> ($${params.length}::text)::jsonb`
       }
     }
   }
@@ -85,10 +87,40 @@ function buildQuery(
       if (colName) {
         query += ` AND ${colName} ${sqlOp} $${idx}`
       } else if (typeof value === 'number') {
+        if (op === '==' || op === '!=') {
+          // Numeric equality — use @> containment to leverage GIN index
+          params.push(JSON.stringify({ [sanitizeField(field)]: value }))
+          if (op === '==') {
+            query += ` AND data @> ($${idx}::text)::jsonb`
+          } else {
+            query += ` AND NOT data @> ($${idx}::text)::jsonb`
+          }
+          continue
+        }
         query += ` AND (data->>'${sanitizeField(field)}')::numeric ${sqlOp} $${idx}`
       } else if (typeof value === 'boolean') {
+        // Boolean — use @> containment to leverage GIN index
+        params.push(JSON.stringify({ [sanitizeField(field)]: value }))
+        if (op === '==' || op === '!=') {
+          if (op === '==') {
+            query += ` AND data @> ($${idx}::text)::jsonb`
+          } else {
+            query += ` AND NOT data @> ($${idx}::text)::jsonb`
+          }
+          continue
+        }
         query += ` AND (data->>'${sanitizeField(field)}')::boolean ${sqlOp} $${idx}`
       } else {
+        // String equality — use @> containment to leverage GIN index
+        if (op === '==' || op === '!=') {
+          params.push(JSON.stringify({ [sanitizeField(field)]: value }))
+          if (op === '==') {
+            query += ` AND data @> ($${idx}::text)::jsonb`
+          } else {
+            query += ` AND NOT data @> ($${idx}::text)::jsonb`
+          }
+          continue
+        }
         query += ` AND data->>'${sanitizeField(field)}' ${sqlOp} $${idx}`
       }
       params.push(value)
