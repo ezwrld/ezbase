@@ -21,7 +21,7 @@ services:
       ADMIN_KEY: "test-admin-key"
       RULES_PATH: "/tmp/rules.json"
       STORAGE_PATH: "/tmp/ezbase-files"
-      # BETTER_AUTH_URL: "http://localhost:7003"    # required for OAuth (callback URLs)
+      # EZBASE_URL: "http://localhost:7003"    # required for OAuth (callback URLs)
       # GOOGLE_CLIENT_ID: ""
       # GOOGLE_CLIENT_SECRET: ""
       # GITHUB_CLIENT_ID: ""
