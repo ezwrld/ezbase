@@ -122,7 +122,7 @@ ezbase:
   volumes:
     - ezbase-data:/data
   environment:
-    BETTER_AUTH_URL: "https://myapp.com"    # required for OAuth (callback URLs)
+    EZBASE_URL: "https://myapp.com"    # required for OAuth (callback URLs)
     GOOGLE_CLIENT_ID: "..."
     GOOGLE_CLIENT_SECRET: "..."
     GITHUB_CLIENT_ID: "..."
@@ -135,7 +135,7 @@ ezbase:
 
 No env vars = email/password only. Add provider credentials = OAuth just works. Zero code changes.
 
-OAuth callback URL to register with each provider: `{BETTER_AUTH_URL}/api/auth/callback/{provider}`
+OAuth callback URL to register with each provider: `{EZBASE_URL}/api/auth/callback/{provider}`
 
 ## Custom Claims & Roles
 

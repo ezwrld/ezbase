@@ -17,7 +17,7 @@ export function initConfig() {
 }
 
 /**
- * Parse BETTER_AUTH_URL into origin + base path.
+ * Parse EZBASE_URL into origin + base path.
  * Supports path-prefix deployments (e.g. http://localhost/ez).
  *
  * - http://localhost:7003      → origin: http://localhost:7003, basePath: ''
@@ -26,7 +26,7 @@ export function initConfig() {
  */
 export function getPublicUrl() {
   const port = parseInt(process.env.PORT || '8080')
-  const raw = process.env.BETTER_AUTH_URL || `http://localhost:${port}`
+  const raw = process.env.EZBASE_URL || `http://localhost:${port}`
   const parsed = new URL(raw)
   const basePath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '')
   return { origin: parsed.origin, basePath }

@@ -43,7 +43,7 @@ BetterAuth-powered OAuth sign-in (Google, GitHub, Microsoft, Apple). Enabled by 
 ### Env vars to set for testing
 
 ```
-BETTER_AUTH_URL=http://localhost:7003
+EZBASE_URL=http://localhost:7003
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 ```

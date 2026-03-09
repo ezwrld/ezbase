@@ -269,7 +269,7 @@ ezbase supports OAuth sign-in (Google, GitHub, Microsoft, Apple) via BetterAuth.
 2. Set the callback URL to `{your-ezbase-url}/api/auth/callback/{provider}` (e.g. `https://myapp.com/api/auth/callback/google`)
 3. Set env vars on your ezbase instance:
    ```
-   BETTER_AUTH_URL=https://myapp.com          # your public URL (required for OAuth)
+   EZBASE_URL=https://myapp.com          # your public URL (required for OAuth)
    GOOGLE_CLIENT_ID=your-client-id
    GOOGLE_CLIENT_SECRET=your-client-secret
    ```
@@ -758,7 +758,7 @@ Upload request: `POST` with `multipart/form-data`, field name `file`. Returns `F
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ADMIN_KEY` | No | Admin password. Auto-generated if not set (printed to logs). To rotate: change this and restart. |
-| `BETTER_AUTH_URL` | Only for OAuth | Public URL for OAuth callback URLs (e.g. `https://myapp.com`). |
+| `EZBASE_URL` | Only for OAuth | Public URL for OAuth callback URLs (e.g. `https://myapp.com`). |
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
 | `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |
