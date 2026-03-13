@@ -55,7 +55,8 @@ function buildQuery(
   orderBy?: string,
   order?: string,
   limitParam?: string,
-  docFilters?: AppliedFilter[]
+  docFilters?: AppliedFilter[],
+  offsetParam?: string
 ) {
   let query = `SELECT * FROM db_${database}.col_${collection} WHERE true`
   const params: unknown[] = []
@@ -147,6 +148,14 @@ function buildQuery(
     }
   }
 
+  if (offsetParam) {
+    const n = parseInt(offsetParam, 10)
+    if (n > 0) {
+      params.push(n)
+      query += ` OFFSET $${params.length}`
+    }
+  }
+
   return { query, params }
 }
 
@@ -212,6 +221,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const orderBy = c.req.query('orderBy')
     const order = c.req.query('order')
     const limitParam = c.req.query('limit')
+    const offsetParam = c.req.query('offset')
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
 
     return streamSSE(c, async (stream) => {
@@ -223,7 +233,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
           orderBy,
           order,
           limitParam,
-          docFilters
+          docFilters,
+          offsetParam
         )
         const rows = await sql.unsafe(query, params as any[])
         await stream.writeSSE({
@@ -243,6 +254,26 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       stream.onAbort(() => unsub())
       while (true) await stream.sleep(30000)
     })
+  })
+
+  // ── Stats (admin-only, used by console dashboard) ─────────
+  app.get('/collections/:collection/stats', async (c) => {
+    const role = c.get('role') || 'anonymous'
+    if (role !== 'admin') {
+      return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
+    }
+
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    await ensureCollection(database, collection)
+    const table = qualifiedTable(database, collection)
+
+    const rows = await sql`
+      SELECT COUNT(*)::int AS count,
+             COALESCE(SUM(pg_column_size(data)), 0)::bigint AS size
+      FROM ${table}
+    `
+    return c.json({ count: rows[0].count, size: Number(rows[0].size) })
   })
 
   // ── List collections ─────────────────────────────────────────
@@ -292,7 +323,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       c.req.query('orderBy'),
       c.req.query('order'),
       c.req.query('limit'),
-      docFilters
+      docFilters,
+      c.req.query('offset')
     )
     const rows = await sql.unsafe(query, params as any[])
     return c.json(rows.map(formatDoc))
@@ -467,6 +499,6 @@ adminRoutes.delete('/db/:database', async (c) => {
 const legacyRoutes = collectionRoutes(() => 'default')
 
 // Database-aware routes
-const dbRoutes = collectionRoutes((c) => c.req.param('database'))
+const dbRoutes = collectionRoutes((c) => c.req.param('database')!)
 
 export { legacyRoutes, dbRoutes, adminRoutes }

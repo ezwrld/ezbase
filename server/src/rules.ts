@@ -433,4 +433,4 @@ function legacyPermRoutes(getDatabase: (c: Context) => string) {
 }
 
 export const legacyPermissionRoutes = legacyPermRoutes(() => 'default')
-export const dbLegacyPermissionRoutes = legacyPermRoutes((c) => c.req.param('database'))
+export const dbLegacyPermissionRoutes = legacyPermRoutes((c) => c.req.param('database')!)

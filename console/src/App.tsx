@@ -25,7 +25,7 @@ export default function App() {
   // Hooks are called unconditionally (rules of hooks), but only used when authenticated
   const { databases, loading: dbLoading } = useDatabases(adminKey || '')
   const { collections, loading: colLoading, error: colError, refresh } = useCollections(selectedDb, adminKey || '')
-  const { documents, loading: docLoading, error: docError } = useDocuments(selectedDb, selected, adminKey || '')
+  const { documents, loading: docLoading, error: docError, page, totalPages, totalCount, nextPage, prevPage } = useDocuments(selectedDb, selected, adminKey || '')
   const stats = useCollectionStats(selectedDb, collections, adminKey || '')
   const statsMap = new Map(stats.map((s) => [s.name, s]))
 
@@ -258,13 +258,36 @@ export default function App() {
                   <h2 className="font-mono text-base font-semibold text-zinc-900">{selected}</h2>
                   {!docLoading && (
                     <span className="text-xs text-zinc-500">
-                      {documents.length} document{documents.length !== 1 ? 's' : ''}
+                      {totalCount.toLocaleString()} document{totalCount !== 1 ? 's' : ''}
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5 text-xs text-emerald-600">
-                  <Radio className="h-3 w-3" />
-                  Live
+                <div className="flex items-center gap-3">
+                  {totalPages > 1 && (
+                    <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+                      <button
+                        onClick={prevPage}
+                        disabled={page === 0}
+                        className="rounded px-1.5 py-0.5 hover:bg-zinc-100 disabled:opacity-30"
+                      >
+                        Prev
+                      </button>
+                      <span className="font-mono">
+                        {page + 1} / {totalPages}
+                      </span>
+                      <button
+                        onClick={nextPage}
+                        disabled={page >= totalPages - 1}
+                        className="rounded px-1.5 py-0.5 hover:bg-zinc-100 disabled:opacity-30"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1.5 text-xs text-emerald-600">
+                    <Radio className="h-3 w-3" />
+                    Live
+                  </div>
                 </div>
               </div>
 
