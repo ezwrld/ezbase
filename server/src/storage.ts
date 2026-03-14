@@ -32,7 +32,7 @@ function requireStorageAccess(action: 'read' | 'write' | 'delete') {
     const role = c.get('role') || 'anonymous'
     if (role === 'admin') return next()
 
-    const bucket = c.req.param('bucket')
+    const bucket = c.req.param('bucket')!
     const access = getBucketAccess(bucket)
 
     if (access === 'public') {
@@ -89,7 +89,7 @@ storageRoutes.get('/storage', async (c) => {
 
 // Upload file to bucket (auto-generated path)
 storageRoutes.post('/storage/:bucket', requireStorageAccess('write'), async (c) => {
-  const bucket = c.req.param('bucket')
+  const bucket = c.req.param('bucket')!
 
   const formData = await c.req.formData()
   const file = formData.get('file') as File | null
@@ -106,7 +106,7 @@ storageRoutes.post('/storage/:bucket', requireStorageAccess('write'), async (c) 
   await Bun.write(diskPath, file)
 
   const now = Date.now()
-  const userId = c.get('userId') as string | undefined
+  const userId = c.get('userId') ?? null
 
   await sql`
     INSERT INTO _ezbase_files (path, bucket, filename, size, mime_type, uploaded_by, created_at, updated_at)
@@ -131,7 +131,7 @@ storageRoutes.post('/storage/:bucket', requireStorageAccess('write'), async (c) 
 
 // Upload file to specific path
 storageRoutes.post('/storage/:bucket/:path{.+}', requireStorageAccess('write'), async (c) => {
-  const bucket = c.req.param('bucket')
+  const bucket = c.req.param('bucket')!
   const pathParam = c.req.param('path')
   if (!pathParam) return c.json({ error: 'Path required' }, 400)
 
@@ -148,7 +148,7 @@ storageRoutes.post('/storage/:bucket/:path{.+}', requireStorageAccess('write'), 
   await Bun.write(diskPath, file)
 
   const now = Date.now()
-  const userId = c.get('userId') as string | undefined
+  const userId = c.get('userId') ?? null
 
   await sql`
     INSERT INTO _ezbase_files (path, bucket, filename, size, mime_type, uploaded_by, created_at, updated_at)
@@ -173,9 +173,9 @@ storageRoutes.post('/storage/:bucket/:path{.+}', requireStorageAccess('write'), 
 
 // List files in bucket
 storageRoutes.get('/storage/:bucket', requireStorageAccess('read'), async (c) => {
-  const bucket = c.req.param('bucket')
+  const bucket = c.req.param('bucket')!
   const ownerFilter = c.get('storageOwnerFilter')
-  const userId = c.get('userId') as string | undefined
+  const userId = c.get('userId') ?? null
 
   let rows
   if (ownerFilter && userId) {
@@ -199,7 +199,7 @@ storageRoutes.get('/storage/:bucket', requireStorageAccess('read'), async (c) =>
 
 // Download file
 storageRoutes.get('/storage/:bucket/:path{.+}', requireStorageAccess('read'), async (c) => {
-  const bucket = c.req.param('bucket')
+  const bucket = c.req.param('bucket')!
   const pathParam = c.req.param('path')
   if (!pathParam) return c.json({ error: 'Path required' }, 400)
 
@@ -209,7 +209,7 @@ storageRoutes.get('/storage/:bucket/:path{.+}', requireStorageAccess('read'), as
   // Owner check
   const ownerFilter = c.get('storageOwnerFilter')
   if (ownerFilter) {
-    const userId = c.get('userId') as string | undefined
+    const userId = c.get('userId') ?? null
     const meta = await sql`SELECT uploaded_by FROM _ezbase_files WHERE path = ${fullPath}`
     if (meta.length === 0) return c.json({ error: 'File not found' }, 404)
     if (meta[0].uploaded_by !== userId) return c.json({ error: 'Forbidden' }, 403)
@@ -232,7 +232,7 @@ storageRoutes.get('/storage/:bucket/:path{.+}', requireStorageAccess('read'), as
 
 // Delete file
 storageRoutes.delete('/storage/:bucket/:path{.+}', requireStorageAccess('delete'), async (c) => {
-  const bucket = c.req.param('bucket')
+  const bucket = c.req.param('bucket')!
   const pathParam = c.req.param('path')
   if (!pathParam) return c.json({ error: 'Path required' }, 400)
 
@@ -242,7 +242,7 @@ storageRoutes.delete('/storage/:bucket/:path{.+}', requireStorageAccess('delete'
   // Owner check
   const ownerFilter = c.get('storageOwnerFilter')
   if (ownerFilter) {
-    const userId = c.get('userId') as string | undefined
+    const userId = c.get('userId') ?? null
     const meta = await sql`SELECT uploaded_by FROM _ezbase_files WHERE path = ${fullPath}`
     if (meta.length === 0) return c.json({ error: 'File not found' }, 404)
     if (meta[0].uploaded_by !== userId) return c.json({ error: 'Forbidden' }, 403)

@@ -3,56 +3,47 @@ import { useState, useEffect, useRef } from 'react'
 export interface CollectionStats {
   name: string
   count: number
-  size: number // approximate bytes (JSON-encoded data)
+  size: number
 }
 
 export function useCollectionStats(database: string, collections: string[], adminKey: string) {
   const [stats, setStats] = useState<Map<string, CollectionStats>>(new Map())
-  const sourcesRef = useRef<Map<string, EventSource>>(new Map())
+  const timerRef = useRef<ReturnType<typeof setInterval>>()
 
   const basePath = database === 'default' ? '/api' : `/api/db/${encodeURIComponent(database)}`
 
   useEffect(() => {
-    const sources = sourcesRef.current
-
-    // Close all existing SSE connections on database or collections change
-    for (const es of sources.values()) {
-      es.close()
-    }
-    sources.clear()
     setStats(new Map())
+    if (!collections.length || !adminKey) return
 
-    // Open SSE for each collection
-    for (const name of collections) {
-      const url = `${basePath}/collections/${encodeURIComponent(name)}/sse?token=${encodeURIComponent(adminKey)}`
-      const es = new EventSource(url)
-      sources.set(name, es)
+    const fetchStats = async () => {
+      const results = await Promise.allSettled(
+        collections.map(async (name) => {
+          const res = await fetch(
+            `${basePath}/collections/${encodeURIComponent(name)}/stats`,
+            { headers: { Authorization: `Bearer ${adminKey}` } }
+          )
+          if (!res.ok) return null
+          const data = await res.json()
+          return { name, count: data.count as number, size: data.size as number }
+        })
+      )
 
-      es.addEventListener('snapshot', (e: MessageEvent) => {
-        try {
-          const docs: { id: string; data: Record<string, unknown> }[] = JSON.parse(e.data)
-          const count = docs.length
-          let size = 0
-          for (const doc of docs) {
-            size += new Blob([JSON.stringify(doc.data)]).size
+      setStats((prev) => {
+        const next = new Map(prev)
+        for (const result of results) {
+          if (result.status === 'fulfilled' && result.value) {
+            next.set(result.value.name, result.value)
           }
-          setStats((prev) => {
-            const next = new Map(prev)
-            next.set(name, { name, count, size })
-            return next
-          })
-        } catch {
-          // ignore parse errors
         }
+        return next
       })
     }
 
-    return () => {
-      for (const es of sources.values()) {
-        es.close()
-      }
-      sources.clear()
-    }
+    fetchStats()
+    timerRef.current = setInterval(fetchStats, 5000)
+
+    return () => clearInterval(timerRef.current)
   }, [basePath, adminKey, collections.join(',')])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return Array.from(stats.values())
