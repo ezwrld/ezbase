@@ -90,6 +90,72 @@ A rules file that lives in your project, version-controlled, applied on deploy. 
 
 Not building this yet. Current permission system (rules.json with read/write split) works.
 
+## 9. Atomic Document Operations (next)
+
+The current document API gives each create/update/delete one atomic SQL statement, but it does not expose a public transaction or compare-and-set primitive. That means app code can still hit race conditions when it needs to read a document, make a decision, and write back only if nobody changed it first.
+
+Add a small atomic-update surface before building higher-level primitives on top:
+
+- **Revision field:** every document gets an internal revision/version.
+- **Compare-and-set update:** update a document only if its current revision, status, or field value still matches an expected value.
+- **Atomic increment/merge helpers:** common single-document mutations without a read/modify/write race.
+- **Optional transaction API:** only if compare-and-set does not cover real app needs.
+
+This is also the foundation for durable queues. A queue worker must be able to claim a pending job exactly once, even when multiple workers or blue/green app versions are running.
+
+## 10. Durable Queues (next)
+
+Queues should be built into ezbase without requiring Redis. For the single-VPS target, Postgres is already the durable coordination layer.
+
+The minimum useful queue is not Redis-style throughput; it is atomic claiming:
+
+```typescript
+await ez.queue('booked_move').publish({
+  type: 'send_customer_confirmation',
+  payload: { moveId },
+})
+
+await ez.queue('booked_move').work(async (job) => {
+  await sendCustomerConfirmation(job.payload.moveId)
+})
+```
+
+Under the hood, queue jobs can still be represented as documents, but claims must be handled by a purpose-built atomic operation:
+
+```text
+pending -> running -> completed
+                 -> retrying
+                 -> failed
+```
+
+Required v1 semantics:
+
+- Publish a job document with `status`, `type`, `payload`, `runAt`, `attempts`, and timestamps.
+- Claim one pending job atomically, setting `status = running`, `lockedBy`, `lockedUntil`, and incrementing attempts.
+- Use a lease timeout so jobs recover if a worker dies during deploy.
+- Mark jobs complete or failed from the worker harness.
+- Support delayed jobs and simple retry/backoff.
+- Expose queue state in the console for debugging and manual retry.
+- Use LISTEN/NOTIFY as a wakeup optimization, with polling as the correctness fallback.
+
+Redis/BullMQ becomes useful when queue traffic needs separate infrastructure, very high sustained throughput, or advanced scheduling/fanout behavior. For ezbase's target, a Postgres-backed queue should handle normal SaaS workloads and removes another service from the stack.
+
+## 11. Search (next)
+
+Add search out of the box. Start with the least operational complexity that satisfies common app needs:
+
+1. **Postgres full-text search first** for simple text search over selected fields.
+2. **Meilisearch optional later** when typo tolerance, ranking, faceting, or richer search UX justifies the extra process and memory.
+
+The SDK should expose one search API either way:
+
+```typescript
+const results = await ez.collection('bookings').search('packing supplies', {
+  fields: ['customerName', 'notes'],
+  limit: 20,
+})
+```
+
 ---
 
 ## Implementation Order
@@ -103,5 +169,8 @@ Not building this yet. Current permission system (rules.json with read/write spl
 7. ~~**Auth: Custom claims** — role + claims fields, admin user management endpoints~~ **Done**
 8. ~~**Console admin gate** — login screen, key rotation, all API calls authenticated~~ **Done**
 9. ~~**Separate read/write permissions** — `rules.json` with `read` / `write` rule keys~~ **Done**
-10. **Backups** — automated pg_dump, point-in-time recovery
-11. **Observability** — request metrics, auth analytics, console dashboard
+10. **Backups** — automated pg_dump, off-box object storage, restore drills
+11. **Atomic document operations** — revision/compare-and-set updates, mutation helpers
+12. **Durable queues** — Postgres-backed job documents with atomic claim, leases, retries, console visibility
+13. **Search** — Postgres full-text search first, optional Meilisearch integration later
+14. **Observability** — request metrics, auth analytics, console dashboard

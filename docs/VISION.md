@@ -4,7 +4,7 @@
 
 **Your data comes first. Structure follows when you're ready.**
 
-EZBase is a self-hosted, NoSQL-flavored database platform built for developers who want Firebase-level DX without the vendor lock-in, cost, or compromises. It wraps battle-tested infrastructure (Postgres, Meilisearch) behind a zero-config SDK and web console, runs entirely in Docker, and costs nothing beyond your VPS.
+EZBase is a self-hosted, NoSQL-flavored database platform built for developers who want Firebase-level DX without the vendor lock-in, cost, or compromises. It wraps battle-tested infrastructure behind a zero-config SDK and web console, runs entirely in Docker, and costs nothing beyond your VPS.
 
 ---
 
@@ -38,7 +38,7 @@ Three containers in a Docker Compose dev stack (one container in production via 
 | **PostgreSQL** | Document storage (JSONB), pub/sub (LISTEN/NOTIFY), auth (BetterAuth) | Postgres 16 | 500MB–1GB |
 | **Console** | Web UI for managing everything | React + Vite (Nginx) | ~30MB |
 
-Meilisearch will be added when full-text search is implemented.
+Search and durable queues should be added without breaking the one-VPS, one-data-appliance model. Postgres should carry the simple versions first; optional dedicated services can come later when they clearly earn their operational cost.
 
 **Total footprint: ~800MB–1.5GB on a 4GB VPS.**
 
@@ -99,9 +99,30 @@ A single Bun process can hold 10,000–50,000 concurrent SSE connections. At sma
 
 GIN indexes are created automatically by EZBase on every collection at table creation time.
 
-### Redis: intentionally excluded
+### Redis: intentionally excluded by default
 
 Postgres reading a row by primary key from RAM: ~0.1–0.5ms. Redis doing the same: ~0.05–0.1ms. The marginal gain doesn't justify the added complexity and cache invalidation headaches. Postgres has its own buffer cache — if your data fits in RAM (and at this scale it does), hot data lives in memory already. Add Redis later if you ever actually need it.
+
+For queues, Redis is also not the first move. The bottleneck in normal small-business workflows is almost never the time it takes to pop a job off the queue; it is the email provider, payment API, CRM sync, webhook, PDF generation, or third-party integration the job performs. A Postgres-backed queue with atomic claiming, leases, retries, and console visibility is enough for the ezbase target and avoids another stateful service.
+
+### Transactions and atomic updates (future — not built)
+
+Current CRUD operations are individually atomic at the SQL-statement level, but ezbase does not yet expose a public transaction or compare-and-set API. Race-prone workflows need a way to say: update this document only if nobody changed it since I read it, or only if a specific field still has the expected value.
+
+Planned primitives:
+
+```typescript
+const doc = await ez.collection('moves').doc(moveId).get()
+
+await ez.collection('moves').doc(moveId).updateIf(
+  { revision: doc.revision },
+  { status: 'booked' }
+)
+
+await ez.collection('counters').doc('daily').increment({ bookings: 1 })
+```
+
+Those primitives should cover the common Firebase-transaction use cases without forcing every app into a broad transaction API. If real projects need multi-document transactions later, add them deliberately.
 
 ---
 
@@ -207,7 +228,52 @@ Per-collection rules defined in `rules.json` with separate read/write levels, cl
 
 ---
 
+## Durable Queues (future — not built)
+
+EZBase should include a simple durable queue for the background jobs every small SaaS ends up needing: send emails, sync third parties, retry webhooks, generate reports, and clean up data. The queue should live in Postgres so it survives app deploys, crashes, and blue/green cutovers.
+
+The public API can feel document-native:
+
+```typescript
+await ez.queue('move_booked').publish({
+  type: 'sync_customer_to_crm',
+  payload: { moveId },
+  runAt: new Date(),
+})
+
+await ez.queue('move_booked').work({ concurrency: 1 }, async (job) => {
+  await syncCustomerToCrm(job.payload.moveId)
+})
+```
+
+The implementation needs one hard guarantee: atomic claim. A worker must be able to take a pending job and mark it running in a single database operation so two workers cannot run the same job at the same time.
+
+Minimum v1 behavior:
+
+- Job documents with `pending`, `running`, `completed`, `retrying`, and `failed` states
+- Atomic claim with `lockedBy`, `lockedUntil`, and attempt count
+- Lease expiry so interrupted deploys do not strand work forever
+- Retry/backoff and delayed jobs
+- Worker harness that marks success/failure even when the handler throws
+- Console view for pending/running/failed jobs and manual retry
+- LISTEN/NOTIFY for fast wakeups, polling fallback for correctness
+
+At the scale ezbase targets, this should comfortably handle thousands to hundreds of thousands of jobs per day depending on job size, indexing, retention, and VPS resources. If a project outgrows that, it can graduate to Redis/BullMQ, SQS, or another dedicated queue.
+
 ## Full-Text Search (future — not built)
+
+Start with Postgres full-text search for common app search over selected fields. It keeps the one-service operational model and is good enough for many internal tools, local-business apps, and simple SaaS products.
+
+```typescript
+const results = await db.collection('bookings').search('beach resort cancun', {
+  fields: ['customerName', 'notes', 'origin', 'destination'],
+  limit: 20,
+})
+```
+
+Meilisearch remains a good optional upgrade when a project needs typo tolerance, custom ranking, facets, synonyms, or a richer search UX than Postgres should own.
+
+### Optional Meilisearch mode
 
 Powered by Meilisearch. Enabled per-collection in the console.
 
@@ -310,7 +376,8 @@ Automated via cron in the Docker setup:
 | Schema | None | Migrations | Forced | **Gradual, optional** |
 | Self-hosted | No | Yes (complex) | Yes (single binary) | **Yes (Docker Compose)** |
 | Realtime | Yes | Yes | Yes | **Yes (SSE)** |
-| Full-text search | No (needs Algolia) | Basic | Basic | **Meilisearch built-in** |
+| Full-text search | No (needs Algolia) | Basic | Basic | **Postgres built-in, Meilisearch optional** |
+| Durable queues | No | No | No | **Postgres-backed queue planned** |
 | File storage | Yes (expensive) | Yes | Yes | **Yes (Postgres, disk-priced)** |
 | Cost at small scale | $50–200+/mo | $25+/mo | Free | **$10–20/mo VPS** |
 | TypeScript DX | Decent | Good (with gen) | Weak | **First-class** |
@@ -345,7 +412,7 @@ The console is a React + Vite + Tailwind SPA gated behind admin key login. Dark 
 
 The following pages are planned but not yet implemented:
 - **Auth page** — user management UI (list users, edit roles/claims, revoke sessions)
-- **Search page** — Meilisearch config and search playground
+- **Search page** — collection search config and search playground
 - **Backups page** — backup scheduling and restore UI
 - **Settings page** — instance info, API monitoring, system stats
 - **Collection schema tab** — type conformance dashboard (requires gradual type system)

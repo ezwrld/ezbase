@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Loader2, AlertCircle, Radio, Database, ChevronDown, FileJson, HardDrive } from 'lucide-react'
+import { Loader2, AlertCircle, Radio, Database, ChevronDown, FileJson, HardDrive, ScanSearch } from 'lucide-react'
 import { useDatabases } from '@/hooks/useDatabases'
 import { useCollections } from '@/hooks/useCollections'
 import { useDocuments } from '@/hooks/useDocuments'
@@ -8,8 +8,9 @@ import { DocumentTable } from '@/components/DocumentTable'
 import { Dashboard } from '@/components/Dashboard'
 import { RulesEditor } from '@/components/RulesEditor'
 import { StorageBrowser } from '@/components/StorageBrowser'
+import { TypeAudit } from '@/components/TypeAudit'
 
-type View = 'dashboard' | 'collection' | 'rules' | 'storage'
+type View = 'dashboard' | 'collection' | 'rules' | 'storage' | 'audit'
 
 export default function App() {
   const [adminKey, setAdminKey] = useState<string | null>(() => localStorage.getItem('ezbase_admin_key'))
@@ -237,6 +238,17 @@ export default function App() {
               <HardDrive className="h-3.5 w-3.5" />
               <span>Storage</span>
             </button>
+            <button
+              onClick={() => setView('audit')}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
+                view === 'audit'
+                  ? 'bg-sky-400/10 text-sky-400'
+                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+              }`}
+            >
+              <ScanSearch className="h-3.5 w-3.5" />
+              <span>Type Audit</span>
+            </button>
           </div>
         </nav>
 
@@ -249,6 +261,10 @@ export default function App() {
           {view === 'rules' && <RulesEditor adminKey={adminKey} />}
 
           {view === 'storage' && <StorageBrowser adminKey={adminKey} />}
+
+          {view === 'audit' && (
+            <TypeAudit adminKey={adminKey} database={selectedDb} initialCollection={selected} />
+          )}
 
           {view === 'collection' && selected && (
             <>

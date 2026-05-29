@@ -23,6 +23,65 @@ type RuleValue = string | CollectionRule | ReadWriteRule
 interface RulesFile { default: string | { read?: string; write?: string }; collections?: Record<string, RuleValue>; buckets?: Record<string, string> }
 interface RulesResponse { rules: RulesFile; readonly: boolean }
 
+// ── Audit types ──────────────────────────────────────────────
+interface EnumValue {
+  value: unknown
+  count: number
+  pct: number
+}
+interface FieldStat {
+  path: string
+  types: Record<string, number>
+  presence: number
+  presencePct: number
+  samples: unknown[]
+  enumValues?: EnumValue[]
+}
+interface ShapeCluster {
+  count: number
+  pct: number
+  sampleIds: string[]
+  extraFields: string[]
+  missingFields: string[]
+  isCanonical: boolean
+  label: string
+}
+interface ExtractedField {
+  name: string
+  optional: boolean
+  type: string
+  presence: number
+  occurrences: number
+  pct: number
+  typeBreakdown: Record<string, number>
+  samples: unknown[]
+  enumValues?: EnumValue[]
+}
+interface ExtractedType {
+  name: string
+  source: string
+  fields: ExtractedField[]
+  occurrences: number
+  occurrencePct: number
+  paths: string[]
+  isRoot: boolean
+  requiredCount: number
+  optionalCount: number
+}
+interface AuditResult {
+  database: string
+  collection: string
+  totalDocs: number
+  scanned: number
+  sampled: boolean
+  fields: FieldStat[]
+  clusters: ShapeCluster[]
+  types: ExtractedType[]
+  canonicalInterface: string
+  rootTypeName: string
+  canonicalThreshold: number
+}
+
 interface AuthUser {
   id: string
   email: string
@@ -518,6 +577,13 @@ class CollectionRef<T = Record<string, unknown>> {
     const url = `${this._basePath()}/sse${sep}${tp}`
     return sseConnect(url, this.ez._authHeaders(), (data) => callback(JSON.parse(data)), onError)
   }
+
+  async audit(opts?: { sample?: number }): Promise<AuditResult> {
+    const qs = opts?.sample ? `?sample=${opts.sample}` : ''
+    const res = await fetch(`${this._basePath()}/audit${qs}`, { headers: this.ez._authHeaders() })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
 }
 
 // ── Document reference ────────────────────────────────────────
@@ -706,5 +772,5 @@ class QueryRef<T = Record<string, unknown>> {
 }
 
 export { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient, StorageBucket, FileHandle }
-export type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, RuleValue, ReadWriteRule }
+export type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, RuleValue, ReadWriteRule, AuditResult, FieldStat, ShapeCluster, ExtractedType, ExtractedField, EnumValue }
 export default EzBase

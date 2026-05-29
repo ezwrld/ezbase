@@ -54,7 +54,9 @@ COPY server/src ./src
 COPY docker/supervisord.conf /etc/supervisor/conf.d/ezbase.conf
 COPY docker/nginx.prod.conf /etc/nginx/nginx.conf
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/ezbasectl /usr/local/bin/ezbasectl
 RUN chmod +x /entrypoint.sh
+RUN chmod +x /usr/local/bin/ezbasectl
 
 EXPOSE 7003
 

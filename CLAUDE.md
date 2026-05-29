@@ -4,7 +4,7 @@ Self-hosted document database — Firebase-level DX without vendor lock-in.
 
 ## Philosophy
 
-ezbase is a **DX wrapper**, not a database engine. The hard problems (storage, indexing, search, auth) are solved by battle-tested tools — Postgres, Meilisearch, BetterAuth. ezbase's job is to glue them together behind a dead-simple SDK and API so you never think about infrastructure. If a good open-source library exists for something, use it. Don't reimplement.
+ezbase is a **DX wrapper**, not a database engine. The hard problems (storage, indexing, auth, durable coordination) are solved by battle-tested tools — primarily Postgres and BetterAuth, with optional specialized services when they earn their operational cost. ezbase's job is to glue them together behind a dead-simple SDK and API so you never think about infrastructure. If a good open-source library exists for something, use it. Don't reimplement.
 
 ## Docs
 
@@ -37,7 +37,7 @@ Detailed specs and plans live in `docs/`:
 
 ## What's not built yet
 
-Meilisearch integration, gradual type system, relations, backups, declarative rules (ezbase.json).
+Backups, atomic document operations, durable Postgres-backed queues, search, gradual type system, relations, declarative rules (ezbase.json).
 
 ## Architecture
 
@@ -51,7 +51,7 @@ Monorepo: `server/`, `sdk/`, `console/`. Runs as a Docker Compose stack in devel
 | **Pub/sub** | Postgres LISTEN/NOTIFY |
 | **Auth** | BetterAuth (sessions, email/password, OAuth providers) — shared across databases |
 | **Files** | On-disk storage (Docker volume) + metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json` |
-| **Search** | Not built (plan: Meilisearch) |
+| **Search** | Not built (plan: Postgres full-text first, optional Meilisearch later) |
 
 ## Dev workflow
 

@@ -34,6 +34,20 @@ const todos = await ez.collection('todos').get()
 
 Console at `http://localhost:7003/console`.
 
+## Backup / Restore
+
+V1 backup/restore is available via the container CLI in the production image.
+
+```bash
+# create a full backup archive
+docker exec r2r-ezbase ezbasectl backup > ezbase-backup.tar.gz
+
+# restore from a backup archive
+cat ezbase-backup.tar.gz | docker exec -i r2r-ezbase ezbasectl restore -
+```
+
+This creates/restores a full-instance archive containing a SQL dump, `/data/files`, and `rules.json` when writable. See `docs/BACKUPS.md` for current scope and caveats.
+
 ## What You Get
 
 - **Documents** — schemaless JSONB, collections created on first write
@@ -67,8 +81,10 @@ source setup.sh && ez up
 - [x] Multi-database support
 - [x] Admin console (database selector, rules editor, storage browser)
 - [x] SDK + Docker image + CI/CD
-- [ ] Full-text search (Meilisearch)
-- [ ] Backups
+- [ ] Automated / selective backups
+- [ ] Atomic document operations (revision / compare-and-set)
+- [ ] Durable queues (Postgres-backed jobs with atomic claim)
+- [ ] Full-text search (Postgres first, Meilisearch optional)
 
 ## License
 

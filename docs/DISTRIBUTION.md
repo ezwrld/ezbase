@@ -38,7 +38,7 @@ volumes:
   ezbase-data:
 ```
 
-One service. One port. One volume. Same as adding redis or meilisearch.
+One service. One port. One volume. Same deployment shape as adding Redis or Meilisearch, but with ezbase owning the durable app data.
 
 ### 2. Install the SDK
 

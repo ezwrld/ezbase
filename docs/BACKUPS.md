@@ -1,6 +1,35 @@
 # Backups & Restoration
 
-Status: **Ideation**
+Status: **Partial Implementation**
+
+## Current V1
+
+Implemented now:
+
+- Full-instance backup via container CLI: `ezbasectl backup`
+- Full-instance restore via container CLI: `ezbasectl restore`
+- Backup archive contains:
+  - `manifest.json`
+  - `database.sql` (`pg_dump` plain SQL, full database)
+  - `files/` from `/data/files` when present
+  - `rules.json` when present
+
+Example usage:
+
+```bash
+# create a backup file from a running ezbase container
+docker exec r2r-ezbase ezbasectl backup > ezbase-backup.tar.gz
+
+# restore from a backup file
+cat ezbase-backup.tar.gz | docker exec -i r2r-ezbase ezbasectl restore -
+```
+
+Current limitations:
+
+- Full restore only. No selective database/collection restore yet.
+- CLI only. No API or console UI yet.
+- Uses SQL dump format today, not the JSONL archive format proposed below.
+- If `rules.json` is mounted read-only, restore skips overwriting it and logs a warning.
 
 ## Problem
 

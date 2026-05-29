@@ -6,6 +6,7 @@ import { generateId } from './id.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { requirePermission } from './middleware.js'
 import type { AppliedFilter } from './rules.js'
+import { auditHandler } from './audit.js'
 
 // ── Helpers ───────────────────────────────────────────────────
 function formatDoc(row: Record<string, unknown>) {
@@ -274,6 +275,11 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       FROM ${table}
     `
     return c.json({ count: rows[0].count, size: Number(rows[0].size) })
+  })
+
+  // ── Type audit (admin-only) ───────────────────────────────
+  app.get('/collections/:collection/audit', async (c) => {
+    return auditHandler(c, getDatabase(c))
   })
 
   // ── List collections ─────────────────────────────────────────

@@ -1,0 +1,147 @@
+#!/bin/bash
+set -euo pipefail
+
+FORMAT_VERSION=1
+PGUSER="${EZBASE_PGUSER:-ezbase}"
+PGDATABASE="${EZBASE_PGDATABASE:-ezbase}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ezbasectl backup [output.tar.gz|-]
+  ezbasectl restore <input.tar.gz|->
+
+Commands:
+  backup   Create a full-instance backup archive. Defaults to stdout.
+  restore  Restore a full-instance backup archive. Reads stdin when input is '-'.
+
+Examples:
+  ezbasectl backup > ezbase-backup.tar.gz
+  ezbasectl restore /tmp/ezbase-backup.tar.gz
+  cat ezbase-backup.tar.gz | ezbasectl restore -
+EOF
+}
+
+log() {
+  printf '%s\n' "$*" >&2
+}
+
+backup_cmd() {
+  local output="${1:--}"
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  local created_at
+  created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  cat > "$tmpdir/manifest.json" <<EOF
+{
+  "formatVersion": $FORMAT_VERSION,
+  "createdAt": "$created_at",
+  "type": "full",
+  "includes": {
+    "databaseSql": true,
+    "files": $(if [ -d /data/files ]; then printf 'true'; else printf 'false'; fi),
+    "rules": $(if [ -f /data/rules.json ]; then printf 'true'; else printf 'false'; fi)
+  }
+}
+EOF
+
+  if [ -f /data/rules.json ]; then
+    cp /data/rules.json "$tmpdir/rules.json"
+  fi
+
+  log "Creating database dump..."
+  su postgres -c "pg_dump --clean --if-exists --no-owner --no-privileges -U \"$PGUSER\" \"$PGDATABASE\"" > "$tmpdir/database.sql"
+
+  local -a tar_args
+  tar_args=(-czf "$output" -C "$tmpdir" manifest.json database.sql)
+  if [ -f "$tmpdir/rules.json" ]; then
+    tar_args+=(rules.json)
+  fi
+  if [ -d /data/files ]; then
+    tar_args+=(-C /data files)
+  fi
+
+  log "Writing backup archive..."
+  tar "${tar_args[@]}"
+  log "Backup complete."
+}
+
+restore_cmd() {
+  local input="${1:--}"
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  local server_was_running=0
+  if command -v supervisorctl >/dev/null 2>&1; then
+    local status
+    status="$(supervisorctl status server 2>/dev/null || true)"
+    if printf '%s' "$status" | grep -q 'RUNNING'; then
+      server_was_running=1
+      log "Stopping API server for restore..."
+      supervisorctl stop server >/dev/null || true
+    fi
+  fi
+
+  cleanup() {
+    rm -rf "$tmpdir"
+    if [ "$server_was_running" -eq 1 ]; then
+      log "Starting API server..."
+      supervisorctl start server >/dev/null || true
+    fi
+  }
+  trap cleanup EXIT
+
+  log "Extracting backup archive..."
+  if [ "$input" = "-" ]; then
+    tar -xzf - -C "$tmpdir"
+  else
+    tar -xzf "$input" -C "$tmpdir"
+  fi
+
+  if [ ! -f "$tmpdir/database.sql" ]; then
+    log "Backup archive is missing database.sql"
+    exit 1
+  fi
+
+  log "Restoring database..."
+  su postgres -c "psql -v ON_ERROR_STOP=1 -U \"$PGUSER\" \"$PGDATABASE\" < \"$tmpdir/database.sql\""
+
+  if [ -d "$tmpdir/files" ]; then
+    log "Restoring files..."
+    rm -rf /data/files
+    mkdir -p /data/files
+    cp -a "$tmpdir/files/." /data/files/
+  fi
+
+  if [ -f "$tmpdir/rules.json" ]; then
+    if [ -e /data/rules.json ] && [ ! -w /data/rules.json ]; then
+      log "Skipping rules restore: /data/rules.json is not writable"
+    else
+      log "Restoring rules.json..."
+      cp "$tmpdir/rules.json" /data/rules.json
+    fi
+  fi
+
+  log "Restore complete."
+}
+
+case "${1:-}" in
+  backup)
+    shift
+    backup_cmd "${1:--}"
+    ;;
+  restore)
+    shift
+    restore_cmd "${1:--}"
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
