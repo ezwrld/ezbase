@@ -5,8 +5,8 @@
 
 import { EzBase } from '../sdk/src/index.js'
 
-const URL = "http://localhost:7003";
-const ADMIN_KEY = "test-admin-key";
+const URL = process.env.URL || "http://localhost:7003";
+const ADMIN_KEY = process.env.ADMIN_KEY || "test-admin-key";
 
 let passed = 0;
 let failed = 0;

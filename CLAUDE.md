@@ -30,14 +30,15 @@ Detailed specs and plans live in `docs/`:
 - **Auth** — BetterAuth (email/password, OAuth providers, session tokens), per-collection permissions (public/authenticated/admin/owner/role:*), custom claims, user management endpoints, shared across databases
 - **Rules** — Declarative `rules.json` for per-collection access control + claim-based document filters (replaces `_ezbase_config` Postgres table)
 - **File Storage** — upload/download/delete files via REST, stored on disk (Docker volume), metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json`
+- **Backups** — streaming tar.gz backups (JSONL per collection + manifest + auth + storage + rules), granular restore (per database/collection/part), query-filtered restore (`where` + time bounds), conflict modes (replace/skip/error), `ez backup --stdout` piping for off-site — see `docs/BACKUPS.md`
 - **Console** — React + Vite + Tailwind SPA with database selector, live-updating document tables, rules editor, and storage browser
 - **SDK** — zero-dependency TypeScript client, works in Node/Bun/Deno/browsers
-- **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`
+- **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`, `ez backup`, `ez restore`
 - **Distribution setup** — Dockerfile (all-in-one image), GitHub Actions for npm + GHCR publishing
 
 ## What's not built yet
 
-Meilisearch integration, gradual type system, relations, backups, declarative rules (ezbase.json).
+Meilisearch integration, gradual type system, relations, backup scheduling/console UI/S3 push (see `docs/BACKUPS.md` future phases), declarative rules (ezbase.json).
 
 ## Architecture
 
@@ -71,6 +72,7 @@ Verify: `curl http://localhost:7003/api/health`
 |------|---------|
 | `server/src/index.ts` | Entry point, mounts API at `/api` |
 | `server/src/storage.ts` | File storage routes: upload, download, list, delete, head |
+| `server/src/backups.ts` | Backup/restore engine: streaming tar.gz create, list/download/delete, filtered restore |
 | `server/src/routes.ts` | CRUD, SSE, query building |
 | `server/src/auth.ts` | BetterAuth instance + `/me` handler + user management endpoints |
 | `server/src/middleware.ts` | Auth extraction (BetterAuth sessions + claims), permission checks via rules |
@@ -109,6 +111,12 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | GET | `/storage/:bucket/*path` | Download file |
 | DELETE | `/storage/:bucket/*path` | Delete file |
 | HEAD | `/storage/:bucket/*path` | File metadata headers |
+| POST | `/backups` | Create backup (admin; `{type?, database?, collection?}`) |
+| GET | `/backups` | List backups with manifests (admin) |
+| GET | `/backups/:name` | Download backup archive (admin, `latest` alias) |
+| DELETE | `/backups/:name` | Delete backup (admin) |
+| POST | `/backups/:name/restore` | Restore from server backup (admin, RestoreOptions body) |
+| POST | `/restore` | Restore from uploaded tar.gz (admin, `?options=<json>`) |
 | GET | `/rules` | Get rules.json + readonly flag (admin) |
 | PUT | `/rules` | Replace entire rules.json (admin, 409 if readonly) |
 | PUT | `/rules/collections/:col` | Update single collection rule (admin, 409 if readonly) |

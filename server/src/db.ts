@@ -15,6 +15,29 @@ const BLOCKED_SCHEMAS = ['public', 'information_schema', 'pg_catalog', 'pg_toast
 const ensured = new Set<string>()
 const ensuredDatabases = new Set<string>()
 
+// In-flight creations, deduped so concurrent first-writes share one CREATE.
+// Postgres's IF NOT EXISTS does not protect against *concurrent* creation —
+// losers of that race get a catalog duplicate-key error (e.g. 23505 on pg_type).
+const pendingDatabases = new Map<string, Promise<void>>()
+const pendingCollections = new Map<string, Promise<void>>()
+
+function isDuplicateDdlError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code
+  return code === '23505' || code === '42P07' || code === '42710'
+}
+
+async function withDdlRetry(fn: () => Promise<void>) {
+  try {
+    await fn()
+  } catch (err) {
+    if (!isDuplicateDdlError(err)) throw err
+    // Lost a creation race (concurrent writer from another process) — let the
+    // winner's DDL commit, then re-run; IF NOT EXISTS no-ops the second time.
+    await new Promise((r) => setTimeout(r, 100))
+    await fn()
+  }
+}
+
 export function validateCollectionName(name: string): string | null {
   if (!COLLECTION_RE.test(name)) {
     return 'Collection name must start with a letter and contain only letters, numbers, and underscores (max 63 chars)'
@@ -53,10 +76,16 @@ export async function ensureDatabase(name: string) {
 
   if (ensuredDatabases.has(name)) return
 
-  const schema = sql(`db_${name}`)
-  await sql`CREATE SCHEMA IF NOT EXISTS ${schema}`
-
-  ensuredDatabases.add(name)
+  let pending = pendingDatabases.get(name)
+  if (!pending) {
+    pending = withDdlRetry(async () => {
+      const schema = sql(`db_${name}`)
+      await sql`CREATE SCHEMA IF NOT EXISTS ${schema}`
+      ensuredDatabases.add(name)
+    }).finally(() => pendingDatabases.delete(name))
+    pendingDatabases.set(name, pending)
+  }
+  return pending
 }
 
 // ── Collection management ───────────────────────────────────
@@ -67,21 +96,28 @@ export async function ensureCollection(database: string, name: string) {
   const cacheKey = `${database}:${name}`
   if (ensured.has(cacheKey)) return
 
-  await ensureDatabase(database)
+  let pending = pendingCollections.get(cacheKey)
+  if (!pending) {
+    pending = withDdlRetry(async () => {
+      await ensureDatabase(database)
 
-  const table = qualifiedTable(database, name)
-  await sql`
-    CREATE TABLE IF NOT EXISTS ${table} (
-      id TEXT PRIMARY KEY,
-      data JSONB NOT NULL DEFAULT '{}',
-      created_at BIGINT NOT NULL,
-      updated_at BIGINT NOT NULL
-    )
-  `
-  await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
-  await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_created`)} ON ${table} (created_at)`
+      const table = qualifiedTable(database, name)
+      await sql`
+        CREATE TABLE IF NOT EXISTS ${table} (
+          id TEXT PRIMARY KEY,
+          data JSONB NOT NULL DEFAULT '{}',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL
+        )
+      `
+      await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
+      await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_created`)} ON ${table} (created_at)`
 
-  ensured.add(cacheKey)
+      ensured.add(cacheKey)
+    }).finally(() => pendingCollections.delete(cacheKey))
+    pendingCollections.set(cacheKey, pending)
+  }
+  return pending
 }
 
 // ── Migration: move col_* tables from public to db_default ──

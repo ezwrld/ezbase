@@ -9,6 +9,7 @@ import { legacyRoutes, dbRoutes, adminRoutes } from './routes.js'
 import { auth, initAuth } from './auth.js'
 import { loadRules, watchRules, rulesRoutes, legacyPermissionRoutes, dbLegacyPermissionRoutes } from './rules.js'
 import { storageRoutes } from './storage.js'
+import { backupRoutes } from './backups.js'
 
 const { basePath } = getPublicUrl()
 const app = basePath ? new Hono().basePath(basePath) : new Hono()
@@ -36,6 +37,9 @@ app.use('/api/db/:database', async (c, next) => {
 
 // Storage routes (file uploads/downloads)
 app.route('/api', storageRoutes)
+
+// Backup/restore routes (admin-only)
+app.route('/api', backupRoutes)
 
 // Rules API routes (admin-only)
 app.route('/api', rulesRoutes)
@@ -71,4 +75,7 @@ console.log(`ezbase running on :${port}`)
 export default {
   port,
   fetch: app.fetch,
+  // Bun defaults to ~128MB request bodies — backup restores stream far larger
+  // archives. App-level limits still apply (e.g. EZBASE_MAX_FILE_SIZE on storage).
+  maxRequestBodySize: 1024 * 1024 * 1024 * 1024,
 }

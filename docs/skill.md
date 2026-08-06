@@ -735,6 +735,19 @@ Upload request: `POST` with `multipart/form-data`, field name `file`. Returns `F
 | PUT | `/rules` | Replace entire rules.json (409 if readonly) |
 | PUT | `/rules/collections/:col` | Update single collection rule (409 if readonly) |
 
+### Backups (admin only)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/backups` | Create backup. Body `{ type?, database?, collection? }` — type: `full` (default) \| `documents` \| `auth` \| `storage`. Returns `{ name, size, manifest }`. |
+| GET | `/backups` | List backups with manifests (doc counts + sizes per collection) |
+| GET | `/backups/:name` | Download tar.gz archive. `latest` resolves to newest. |
+| DELETE | `/backups/:name` | Delete backup |
+| POST | `/backups/:name/restore` | Restore. Body: `{ databases?, collections? ("db/col"), auth?, storage?, rules?, conflict? ("replace"\|"skip"\|"error"), where? ([[field,op,value]]), before?, after?, timeField? }`. Empty body restores everything. |
+| POST | `/restore` | Same, from an uploaded tar.gz body; options via `?options=<json>` |
+
+One-liner off-site backup: `curl -H "Authorization: Bearer $ADMIN_KEY" https://your-host/api/backups/latest -o backup.tar.gz` (create one first with `POST /backups`). Roll back one collection by one day: `POST /backups/latest/restore` with `{ "collections": ["default/teams"], "before": <ms>, "conflict": "replace" }`. See `docs/BACKUPS.md` for the full format.
+
 ### Other
 
 | Method | Path | Description |
@@ -762,6 +775,7 @@ Upload request: `POST` with `multipart/form-data`, field name `file`. Returns `F
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
 | `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |
+| `BACKUP_PATH` | No | Backup directory. Default: `{STORAGE_PATH}/.backups`. |
 | `EZBASE_MAX_FILE_SIZE` | No | Max upload size in bytes. Default: 100MB. |
 | `GOOGLE_CLIENT_ID` | No | Google OAuth client ID. Enables "Sign in with Google". |
 | `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret. |

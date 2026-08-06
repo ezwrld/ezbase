@@ -14,6 +14,8 @@ const suites = [
   { name: 'smoke', file: 'smoke.ts' },
   { name: 'qa', file: 'qa.ts' },
   { name: 'auth', file: 'auth.ts' },
+  { name: 'backups', file: 'backups.ts' },
+  { name: 'backup-roundtrip', file: 'backup-roundtrip.ts' },
 ]
 
 async function waitForHealthy(retries = 30) {
