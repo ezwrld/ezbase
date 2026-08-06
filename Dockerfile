@@ -35,6 +35,10 @@ ENV PATH="/root/.bun/bin:${PATH}"
 
 ENV NODE_ENV=production
 
+# Release version baked in at build time (workflow passes it); reported by /api/health
+ARG EZBASE_VERSION=dev
+ENV EZBASE_VERSION=${EZBASE_VERSION}
+
 # Create directories
 RUN mkdir -p \
     /data/postgres \

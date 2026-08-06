@@ -186,6 +186,8 @@ Automatic on merge to master, major.minor versioning (minor bumps per release). 
 - `sdk/**` changed → bumps SDK minor version, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0)
 - `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → bumps image minor version, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.Y`
 
+**Every release PR must add a `CHANGELOG.md` entry** — `## vX.Y — date` with an **Upgrade considerations** section ("None." if none); breaking changes require a new major version and a **⚠ BREAKING** section. The image workflow auto-creates a GitHub Release from the entry. `/api/health` reports the running version (baked in at image build).
+
 Controlling versions explicitly:
 - **Image**: run the "Publish Docker image" workflow manually (workflow_dispatch) with an exact `version` input (e.g. `1.0`) — it builds, tags `v1.0`, and future merges auto-bump from there.
 - **SDK**: `sdk/package.json` is authoritative — set it to any unpublished version and the workflow publishes it as-is; otherwise it auto-bumps minor.

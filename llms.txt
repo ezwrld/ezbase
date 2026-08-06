@@ -26,6 +26,7 @@ Deep dives:
 - Rules & security (permissions, owner data, roles vs claims, multi-tenancy): https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/RULES.md
 - OAuth provider credentials (Google, GitHub, Microsoft, Apple): https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/OAUTH-PROVIDERS.md
 - Backups & restore: https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/BACKUPS.md
+- Changelog + upgrade considerations (check before upgrading an instance): https://raw.githubusercontent.com/ezwrld/ezbase/master/CHANGELOG.md
 
 ## Links
 

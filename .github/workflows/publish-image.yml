@@ -64,6 +64,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            EZBASE_VERSION=${{ steps.version.outputs.VERSION }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ github.repository }}:latest
@@ -74,3 +76,16 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "v${{ steps.version.outputs.VERSION }}"
           git push --tags
+
+      - name: Create GitHub release from CHANGELOG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          # Extract this version's section from CHANGELOG.md
+          NOTES=$(awk "/^## v${VERSION}([^0-9]|$)/{flag=1;next} /^## v/{flag=0} flag" CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            NOTES="Release v${VERSION}. No CHANGELOG entry was written for this release — see commit history."
+          fi
+          gh release create "v${VERSION}" --title "v${VERSION}" --notes "$NOTES" || \
+            echo "release already exists, skipping"

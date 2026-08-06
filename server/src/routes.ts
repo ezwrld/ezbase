@@ -527,7 +527,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 // ── Admin routes (database management) ──────────────────────
 const adminRoutes = new Hono()
 
-adminRoutes.get('/health', (c) => c.json({ status: 'ok' }))
+adminRoutes.get('/health', (c) => c.json({ status: 'ok', version: process.env.EZBASE_VERSION || 'dev' }))
 
 // List databases
 adminRoutes.get('/databases', async (c) => {
