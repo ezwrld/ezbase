@@ -44,6 +44,7 @@ Console at `http://localhost:7003/console`.
 - **Querying** — `where`, `orderBy`, `limit`
 - **Multi-database** — isolated databases per instance, shared auth
 - **Admin console** — database selector, document tables, rules editor, storage browser
+- **Backups** — `ez backup` → one inspectable tar.gz, pipe it anywhere; restore whole instances or single collections
 - **TypeScript SDK** — zero dependencies, works everywhere
 
 ## Docs
@@ -67,8 +68,9 @@ source setup.sh && ez up
 - [x] Multi-database support
 - [x] Admin console (database selector, rules editor, storage browser)
 - [x] SDK + Docker image + CI/CD
+- [x] Backups & restore ([docs/BACKUPS.md](docs/BACKUPS.md))
 - [ ] Full-text search (Meilisearch)
-- [ ] Backups
+- [ ] Backup scheduling, restore points, S3 push
 
 ## License
 

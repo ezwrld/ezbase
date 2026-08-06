@@ -2,6 +2,100 @@
 set -e
 EZBASE_SRC="$(cd "$(dirname "$0")" && pwd)"
 
+# ── Connection ────────────────────────────────────────────────
+# Defaults to the instance on this machine. Override with EZBASE_URL / EZBASE_ADMIN_KEY.
+EZ_URL="${EZBASE_URL:-http://localhost:7003}"
+
+admin_key() {
+  if [ -n "$EZBASE_ADMIN_KEY" ]; then
+    printf '%s' "$EZBASE_ADMIN_KEY"
+    return
+  fi
+  # Dev fallback: read ADMIN_KEY from docker-compose.yml
+  local key
+  key=$(grep -E '^\s*ADMIN_KEY:' "$EZBASE_SRC/docker-compose.yml" 2>/dev/null | head -1 | sed -E 's/.*ADMIN_KEY:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')
+  if [ -z "$key" ]; then
+    echo "error: set EZBASE_ADMIN_KEY (or run against the dev stack)" >&2
+    exit 1
+  fi
+  printf '%s' "$key"
+}
+
+json_get() {
+  # json_get <key> — extract a top-level string value from JSON on stdin
+  grep -o "\"$1\":\"[^\"]*\"" | head -1 | cut -d'"' -f4
+}
+
+# ── Commands ──────────────────────────────────────────────────
+
+cmd_backup() {
+  local KEY; KEY=$(admin_key)
+
+  case "$1" in
+    list)
+      curl -sf -H "Authorization: Bearer $KEY" "$EZ_URL/api/backups"
+      echo
+      return
+      ;;
+    rm)
+      [ -z "$2" ] && { echo "usage: ez backup rm <name>" >&2; exit 1; }
+      curl -sf -X DELETE -H "Authorization: Bearer $KEY" "$EZ_URL/api/backups/$2"
+      echo
+      return
+      ;;
+  esac
+
+  local dest="$1"
+
+  echo "Creating backup..." >&2
+  local resp name
+  resp=$(curl -sf -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+    -d '{}' "$EZ_URL/api/backups") || { echo "error: backup failed" >&2; exit 1; }
+  name=$(printf '%s' "$resp" | json_get name)
+  [ -z "$name" ] && { echo "error: backup failed: $resp" >&2; exit 1; }
+
+  # Destination: a path, a directory, '-' for stdout — or auto-stream when piped
+  if [ "$dest" = "-" ] || { [ -z "$dest" ] && [ ! -t 1 ]; }; then
+    curl -sf -H "Authorization: Bearer $KEY" "$EZ_URL/api/backups/$name"
+  else
+    [ -z "$dest" ] && dest="./$name"
+    [ -d "$dest" ] && dest="${dest%/}/$name"
+    curl -sf -H "Authorization: Bearer $KEY" "$EZ_URL/api/backups/$name" -o "$dest"
+    echo "Saved $dest" >&2
+  fi
+}
+
+cmd_restore() {
+  local KEY; KEY=$(admin_key)
+  local target="$1" cols="$2"
+  [ -z "$target" ] && { echo "usage: ez restore <file|backup-name|latest> [collections]" >&2; exit 1; }
+
+  # `ez restore users,games` — bare collections restore from the latest backup
+  if [ ! -f "$target" ] && [ "$target" != "latest" ] && [[ "$target" != backup-* ]]; then
+    cols="$target"
+    target="latest"
+  fi
+
+  local opts='{}'
+  if [ -n "$cols" ]; then
+    opts='{"collections":['
+    IFS=',' read -ra parts <<< "$cols"
+    local p
+    for p in "${parts[@]}"; do opts+="\"$p\","; done
+    opts="${opts%,}]}"
+  fi
+
+  if [ -f "$target" ]; then
+    curl -sf -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/gzip' \
+      --data-binary @"$target" "$EZ_URL/api/restore?options=$(printf '%s' "$opts" | sed 's/{/%7B/g;s/}/%7D/g;s/\[/%5B/g;s/\]/%5D/g;s/"/%22/g;s|/|%2F|g;s/,/%2C/g;s/:/%3A/g')"
+    echo
+  else
+    curl -sf -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+      -d "$opts" "$EZ_URL/api/backups/$target/restore"
+    echo
+  fi
+}
+
 case "$1" in
   up)
     cd "$EZBASE_SRC"
@@ -23,11 +117,25 @@ case "$1" in
     cd "$EZBASE_SRC"
     docker compose logs -f "${@:2}"
     ;;
+  backup)
+    cmd_backup "${@:2}"
+    ;;
+  restore)
+    cmd_restore "${@:2}"
+    ;;
   *)
     printf "Usage: ez <command>\n\n"
-    printf "  up           Start ezbase on :7003\n"
-    printf "  down         Stop ezbase\n"
-    printf "  down --nuke  Stop and wipe all data\n"
-    printf "  logs         Tail container logs\n"
+    printf "  up | down | down --nuke | logs\n\n"
+    printf "  backup [dest]      Back up everything\n"
+    printf "      ez backup                        → ./backup-<timestamp>.tar.gz\n"
+    printf "      ez backup ~/backups/             → into that folder\n"
+    printf "      ez backup | aws s3 cp - s3://…   → pipes automatically\n"
+    printf "  backup list | backup rm <name>\n\n"
+    printf "  restore <file|name|latest> [collections]   Restore from a backup\n"
+    printf "      ez restore backup.tar.gz             → everything\n"
+    printf "      ez restore users,games               → just those collections, from latest\n"
+    printf "      ez restore backup.tar.gz mydb/users  → collection in a named database\n\n"
+    printf "  Talks to http://localhost:7003 by default (admin key from docker-compose.yml).\n"
+    printf "  Elsewhere: set EZBASE_URL and EZBASE_ADMIN_KEY.\n"
     ;;
 esac

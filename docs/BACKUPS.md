@@ -1,26 +1,85 @@
 # Backups & Restoration
 
-Status: **Ideation**
+Status: **Phase 1 built** — manual backup + restore via API and CLI, with granular targets, query-filtered restore, and conflict modes. Scheduling, console UI, restore points, and S3 are future phases.
 
 ## Problem
 
-No backup/restore capability today. In production as an analytics event store with growing volume. Firebase's restore-everything-or-nothing approach is painful — need granular restoration down to individual collections.
+In production as an analytics event store with growing volume. Firebase's restore-everything-or-nothing approach is painful — need granular restoration down to individual collections, and backups that don't live on the same box as the data.
 
 ## Goals
 
 - **Single-file backups** — one `.tar.gz` that contains everything needed to restore an instance
-- **Granular restoration** — restore everything, a single database, a single collection, auth only, storage only
-- **Auto-backups** — configurable schedules, per-collection if needed
-- **Inspectable** — backup contents should be human-readable (JSONL, not pg_dump binary)
-- **Stats & metadata** — each backup includes manifest with doc counts, sizes per collection, timestamps
+- **Granular restoration** — restore everything, a single database, a single collection, auth only, storage only — or only *documents matching a query*
+- **Pipeable** — backups stream to stdout/HTTP so getting them **off the box** is one shell pipe; no cloud service needed
+- **Inspectable** — backup contents are human-readable (JSONL, not pg_dump binary); `tar -tzf` / `tar -xzOf` work on any machine
+- **Stats & metadata** — each backup includes a manifest with doc counts and sizes per collection
 - **Agent-friendly** — structured manifest that tooling can analyze (e.g., flag a collection that 100x'd overnight)
+- **Streaming** — constant memory regardless of database size (1M+ docs verified); rows stream from Postgres cursors, restores stream line-by-line into batched inserts
+
+## What's built (Phase 1)
+
+- `POST/GET/DELETE /api/backups` + `/api/backups/:name` + `latest` alias
+- `POST /api/backups/:name/restore` and `POST /api/restore` (upload an archive)
+- Backup types: full / documents / auth / storage; scoping to a database or collection
+- Restore targeting: databases, collections, auth, storage, rules — independently selectable
+- **Query-filtered restore**: `where` triples + time bounds, so you can roll back one collection by one day
+- Conflict modes: `replace` (default) / `skip` / `error` — per-collection transactions, `error` aborts with rollback and a 409
+- `ez backup [dest]` / `ez restore <file|name|latest>` CLI — deliberately minimal; the granular/filtered options are API-only for now
+- Backups stored in `BACKUP_PATH` (default `{STORAGE_PATH}/.backups` — on the data volume, dot-prefixed so it can never collide with a storage bucket)
+
+## Off-site backups — no cloud required
+
+Backups next to the data aren't backups. The CLI streams archives so off-site is a pipe:
+
+```bash
+# From your laptop: pull a backup off the VPS
+ssh vps "EZBASE_ADMIN_KEY=... /path/to/ez backup" > backup.tar.gz
+
+# Or skip ssh entirely — the API is already exposed
+curl -H "Authorization: Bearer $ADMIN_KEY" https://your-vps/api/backups/latest -o backup.tar.gz
+
+# On the VPS: push to any S3-compatible bucket
+ez backup | aws s3 cp - s3://my-bucket/ezbase/backup-$(date +%F).tar.gz
+
+# Cron it (built-in scheduling is a future phase)
+0 3 * * * EZBASE_ADMIN_KEY=... /path/to/ez backup --rm | aws s3 cp - s3://my-bucket/ezbase/nightly.tar.gz
+```
+
+## CLI
+
+Deliberately minimal — take a backup, restore a backup. Everything granular lives in the API.
+
+```
+ez backup [dest]                Back up everything
+                                  ez backup              → ./backup-<timestamp>.tar.gz
+                                  ez backup ~/backups/   → into that folder
+                                  ez backup out.tar.gz   → to that file
+                                  ez backup | ssh ...    → piped output streams automatically
+ez backup list                  List server-side backups (JSON, includes manifests)
+ez backup rm <name>             Delete a server-side backup
+
+ez restore <file|name|latest> [collections]   Restore from a backup (backup wins on conflict)
+                                  ez restore backup.tar.gz             → everything
+                                  ez restore users,games               → just those collections, from latest
+                                  ez restore backup.tar.gz mydb/users  → collection in a named database
+```
+
+Connection: `EZBASE_URL` (default `http://localhost:7003` — the instance on this machine) and `EZBASE_ADMIN_KEY` (dev fallback: read from `docker-compose.yml`).
+
+The killer combo — something went wrong today, roll one collection back a day without touching anything else (API; CLI flags for this can come later if wanted):
+
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"collections":["default/teams"],"before":1784800000000}' \
+  http://localhost:7003/api/backups/latest/restore
+```
 
 ## Backup File Format
 
 ```
-backup-2026-03-05T120000Z.tar.gz
-├── manifest.json            # version, timestamp, instance info, stats
-├── rules.json               # permission rules
+backup-20260305T120000000Z.tar.gz
+├── manifest.json            # version, timestamp, type, scope, stats — always the first entry
+├── rules.json               # permission rules (full backups only)
 ├── databases/
 │   ├── default/
 │   │   ├── feed.jsonl       # one JSON doc per line
@@ -28,15 +87,15 @@ backup-2026-03-05T120000Z.tar.gz
 │   └── analytics/
 │       └── events.jsonl
 ├── auth/
-│   ├── users.jsonl
-│   └── accounts.jsonl
-├── storage/
-│   ├── avatars/
-│   │   └── ...files...
-│   └── documents/
-│       └── ...files...
-└── storage-meta.jsonl       # file metadata from _ezbase_files
+│   ├── users.jsonl          # public."user" rows
+│   └── accounts.jsonl       # public.account rows (password hashes live here)
+├── storage-meta.jsonl       # file metadata from _ezbase_files
+└── storage/
+    ├── avatars/...files...
+    └── documents/...files...
 ```
+
+Each document line: `{ "id": "...", "data": {...}, "created_at": 1234, "updated_at": 1234 }`
 
 ### manifest.json
 
@@ -44,30 +103,15 @@ backup-2026-03-05T120000Z.tar.gz
 {
   "version": 1,
   "createdAt": "2026-03-05T12:00:00Z",
-  "ezbaseVersion": "1.2.3",
+  "type": "full",
+  "scope": { "database": "analytics" },
+  "includes": { "documents": true, "auth": false, "storage": false, "rules": false },
   "stats": {
     "databases": {
-      "default": {
-        "collections": {
-          "feed": { "docCount": 42, "sizeBytes": 18200 },
-          "profiles": { "docCount": 8, "sizeBytes": 3100 }
-        }
-      },
-      "analytics": {
-        "collections": {
-          "events": { "docCount": 300, "sizeBytes": 95000 }
-        }
-      }
+      "analytics": { "collections": { "events": { "docCount": 300, "sizeBytes": 95000 } } }
     },
     "auth": { "userCount": 5 },
-    "storage": { "fileCount": 12, "totalSizeBytes": 4500000 },
-    "totalSizeBytes": 4616300
-  },
-  "includes": {
-    "documents": true,
-    "auth": true,
-    "storage": true,
-    "rules": true
+    "storage": { "fileCount": 12, "totalSizeBytes": 4500000 }
   }
 }
 ```
@@ -76,14 +120,14 @@ Stats make it easy for monitoring/agents to diff between backups and flag anomal
 
 ### Why JSONL over pg_dump
 
-- Human-readable, grep-able
+- Human-readable, grep-able, `tar -xzOf backup.tar.gz databases/default/feed.jsonl | head`
 - Portable — not tied to a specific Postgres version
-- Supports granular restore without parsing a monolithic dump
-- Each line: `{ "id": "...", "data": {...}, "created_at": ..., "updated_at": ... }`
+- Supports granular + filtered restore without parsing a monolithic dump
+- Streams both directions — constant memory at any size
 
-### Compression
+### Why not one giant JSON file
 
-`.tar.gz` — universal, good enough. Could revisit `.tar.zst` later for speed if backups get large.
+A tar.gz of per-collection JSONL is still *one file* to move around, but a single JSON object must be parsed whole (bad at 1M+ rows), can't be partially restored without full parsing, and isn't grep-able. JSONL preserves the "one file = your database" simplicity while staying streamable.
 
 ## Backup Types
 
@@ -93,123 +137,69 @@ Stats make it easy for monitoring/agents to diff between backups and flag anomal
 | **Documents only** | All databases + collections | Lightweight, most common |
 | **Single database** | One database's collections | Targeted backup |
 | **Single collection** | One collection from one database | High-frequency backup for hot collections |
-| **Auth only** | User/account/session tables | Before auth migrations |
+| **Auth only** | user/account tables | Before auth migrations |
 | **Storage only** | Files + metadata | Media backup |
 
-## Auto-Backups
+Scoping to a database/collection implies documents-only (no auth/storage/rules in scoped archives).
 
-### Configuration
-
-Env vars or `rules.json` extension (TBD):
-
-```
-BACKUP_ENABLED=true
-BACKUP_SCHEDULE=daily          # daily | weekly | cron expression
-BACKUP_RETENTION=7             # keep last N backups
-BACKUP_PATH=/data/backups      # default: {STORAGE_PATH}/backups/
-BACKUP_TYPE=full               # full | documents | auth | storage
-```
-
-### Per-Collection Schedules (stretch goal)
-
-For hot collections like analytics events, support independent schedules:
-
-```json
-{
-  "backups": {
-    "default": { "schedule": "daily", "retention": 7 },
-    "collections": {
-      "analytics/events": { "schedule": "0 */6 * * *", "retention": 28 }
-    }
-  }
-}
-```
-
-This lets you back up a fast-growing analytics collection every 6 hours while everything else runs daily.
-
-## Restoration
-
-### API Endpoints
+## API
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/backups` | Create backup (params: type, database, collection) |
-| GET | `/api/backups` | List available backups |
-| GET | `/api/backups/:name` | Download backup file |
+| POST | `/api/backups` | Create backup — body `{ type?, database?, collection? }` → `{ name, size, manifest }` |
+| GET | `/api/backups` | List backups with manifests |
+| GET | `/api/backups/:name` | Download archive (`latest` resolves newest; `X-Backup-Name` header carries the real name) |
 | DELETE | `/api/backups/:name` | Delete backup |
-| POST | `/api/backups/:name/restore` | Restore from backup |
-| POST | `/api/restore` | Restore from uploaded file |
+| POST | `/api/backups/:name/restore` | Restore from a server-side backup — body is RestoreOptions |
+| POST | `/api/restore` | Restore from an uploaded archive (raw tar.gz body, options in `?options=<json>`) |
 
-### Restore Options
+All admin-only.
+
+### RestoreOptions
 
 ```json
 {
-  "mode": "full | selective",
-  "targets": {
-    "databases": ["analytics"],
-    "collections": ["analytics/events"],
-    "auth": false,
-    "storage": false,
-    "rules": false
-  },
-  "conflict": "replace | skip | error"
+  "databases": ["analytics"],
+  "collections": ["analytics/events", "bare_means_default_db"],
+  "documents": true, "auth": false, "storage": false, "rules": false,
+  "conflict": "replace",
+  "where": [["orgId", "==", "acme"], ["n", ">=", 5]],
+  "before": 1784800000000, "after": "2026-06-01T00:00:00Z",
+  "timeField": "updated"
 }
 ```
 
-- **replace** — overwrite existing docs with backup versions
-- **skip** — keep existing, only restore missing docs
-- **error** — abort if any conflicts
+- Empty options `{}` = restore **everything** in the archive.
+- Naming any target switches to selective mode: only what you name is restored.
+- `where` uses the same `[field, op, value]` triples as the query API, evaluated per document; `created`/`updated` map to the timestamps.
+- `before`/`after` accept ms epoch or ISO strings and bound `timeField`.
+- Response is a summary: per-collection `{ restored, skipped, filtered }`, auth/storage counts, `rules`, and `warnings`.
 
-### Console UI
+### Conflict strategy: default `replace`
 
-- **Backups page** — list backups with size, date, type, stats summary
-- **Manual backup button** — pick type, trigger, download
-- **Restore flow**:
-  1. Upload or select a backup
-  2. Shows manifest: what's inside, doc counts, sizes
-  3. Tree picker: checkboxes for databases/collections/auth/storage
-  4. Conflict strategy selector
-  5. Confirm + restore
-  6. Progress indicator + result summary
+When you're restoring, you almost always want the backup version to win. `skip` merges (only restores missing docs), `error` is the safety net — each collection restores in a transaction, so a conflict rolls that collection back and the API returns 409.
 
-## Decisions & Recommendations
-
-### Conflict strategy: default to `replace`
-
-Three options: `replace`, `skip`, `error`. Recommendation: **default to `replace`** — when you're restoring, you almost always want the backup version to win. `skip` is useful for merging (e.g., restoring a collection into a db that has new docs since the backup), `error` is a safety net for cautious restores. But `replace` is the sane default — it's what you'd expect "restore" to mean.
-
-### Auto-restore-point before every restore
-
-Before any restore operation, ezbase should automatically snapshot the current state of whatever's about to be overwritten. So if you restore `analytics/events`, it first backs up the current `analytics/events` to a timestamped restore point. This eliminates the Firebase nightmare of "I restored and now I lost what I had." Restore points can use a shorter retention (e.g., keep last 3) and live in a `restore-points/` subdirectory.
-
-### Remote storage: local disk first, S3 later
-
-Local disk (`{STORAGE_PATH}/backups/`) is fine for v1. Most VPS setups can just rsync or cron-copy backups offsite. S3-compatible storage (works with Backblaze B2, MinIO, etc.) is a good v2 feature but adds config complexity and a dependency. Not worth blocking the initial build.
-
-### Manifest diffing
-
-The manifest stats (doc counts, sizes per collection) unlock a simple but powerful capability: diff two backups to detect anomalies. Could be a CLI command (`ez backup diff backup-a backup-b`) or an API endpoint. Useful for monitoring — "events grew 100x overnight" — without needing a separate observability stack. Low effort to build since manifests are just JSON.
-
-### Streaming for large instances
-
-For the analytics use case (and future growth), backup creation should stream JSONL rows from Postgres rather than loading everything into memory. Same for restore — stream lines into INSERT batches. This is a build-time decision, not a feature toggle. Just do it right from the start.
-
-## Build Order
+## Future phases
 
 | Phase | What | Why |
 |-------|------|-----|
-| **1** | Manual backup + restore via API (full + single-collection) | Gets off zero. Highest value. |
-| **2** | Console UI — backup list, manual trigger, restore with tree picker | Makes it usable without curl. |
-| **3** | Auto-backup scheduling (env var config) | Set and forget. |
-| **4** | Auto-restore-points before restore | Safety net. |
-| **5** | Per-collection schedules | For hot collections. |
-| **6** | Manifest diffing (API + CLI) | Anomaly detection. |
-| **7** | Remote storage (S3-compatible) | Offsite backups. |
+| **2** | Console UI — backup list, manual trigger, restore with tree picker + manifest preview | Makes it usable without curl. |
+| **3** | Auto-backup scheduling (`BACKUP_SCHEDULE`, `BACKUP_RETENTION` env vars) | Set and forget. |
+| **4** | Auto-restore-points before every restore | Snapshot what's about to be overwritten first — eliminates "I restored and lost what I had." Keep last N in `restore-points/`. |
+| **5** | Per-collection schedules (`"analytics/events": { "schedule": "0 */6 * * *" }`) | Back up hot collections every 6h, everything else daily. |
+| **6** | Manifest diffing (`ez backup diff a b`) | Anomaly detection — "events grew 100x overnight" — without an observability stack. |
+| **7** | Built-in S3-compatible push (Backblaze, MinIO, R2) | First-class off-site; the pipe idiom covers it until then. |
 
-Phase 1 is the priority — everything else is incremental on top of a working backup/restore core.
+## Known Limitations (v1 — accepted)
+
+- **No cross-collection snapshot isolation.** Each collection streams from its own cursor, so a backup taken during heavy writes captures collection A at t0 and collection B at t1. Each individual collection is internally consistent. If you need a frozen-in-time backup, take it during a quiet period.
+- **Restore is atomic per collection, not per archive.** Each collection restores in its own transaction; if a restore fails midway (e.g. `conflict: "error"`), earlier collections stay restored. The 409 response says what failed.
+- **Backups live on the data volume** (`{STORAGE_PATH}/.backups`). `ez down --nuke` or a dead disk takes them with it — that's why the CLI pipes. Get backups off the box.
+- **No version-compat check on restore yet.** The manifest carries `version: 1`; the restore path currently ignores it.
+- **Restoring auth does not touch sessions.** Users/accounts (incl. password hashes) roundtrip; active sessions are never backed up.
 
 ## Open Questions
 
-- How to handle schema drift — restoring a backup from an older ezbase version?
+- Schema drift — restoring a backup from an older ezbase version (manifest `version` field is the hook)
 - Should the SDK expose backup/restore methods for programmatic use?
-- Max backup size limits / disk space checks before creating a backup?
+- Disk space checks before creating a backup?
