@@ -825,6 +825,15 @@ Built-in request analytics — every API call is aggregated into per-minute buck
 | `order` | `desc` | `asc` or `desc` |
 | `limit` | `20` | Max docs |
 
+## Upgrading ezbase
+
+For agents maintaining an ezbase deployment:
+
+1. **Find the running version**: `GET /api/health` → `{ "status": "ok", "version": "1.0" }` (`"dev"` = non-release build). SDK version is in your `package.json` (`@ezwrld/ezbase`).
+2. **Read the changelog before upgrading**: https://raw.githubusercontent.com/ezwrld/ezbase/master/CHANGELOG.md — every release has an **Upgrade considerations** section.
+3. **The versioning promise**: minor releases (`1.0` → `1.1`) never break — pull the new image and restart. **A major-version jump (`1.x` → `2.0`) means breaking changes**: stop and read that entry's **⚠ BREAKING** section before upgrading, and surface it to a human if the migration touches their data or config.
+4. **Pinning**: use a pinned tag (`ghcr.io/ezwrld/ezbase:1.0`) to control when upgrades happen; `:latest` tracks the newest release. Take a backup before any major upgrade: `ez backup` (or `POST /api/backups`).
+
 ## Environment Variables
 
 | Variable | Required | Description |
