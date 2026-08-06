@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'sdk/**'
+  workflow_dispatch: {}
 
 jobs:
   publish:
@@ -21,11 +22,17 @@ jobs:
         with:
           node-version: 24
 
-      - name: Bump patch version
+      - name: Determine version
         id: version
         working-directory: sdk
         run: |
-          npm version patch --no-git-tag-version
+          # sdk/package.json is authoritative: if its version isn't on npm yet
+          # (e.g. a deliberate bump like 1.0.0), publish it as-is. Otherwise
+          # auto-bump minor (npm requires x.y.z; patch stays 0 → 1.1.0, 1.2.0, ...)
+          CURRENT=$(node -p "require('./package.json').version")
+          if npm view "@ezwrld/ezbase@$CURRENT" version > /dev/null 2>&1; then
+            npm version minor --no-git-tag-version
+          fi
           VERSION=$(node -p "require('./package.json').version")
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
@@ -40,8 +47,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sdk/package.json
-          git commit -m "sdk: release v${{ steps.version.outputs.VERSION }}"
+          if ! git diff --quiet sdk/package.json; then
+            git add sdk/package.json
+            git commit -m "sdk: release v${{ steps.version.outputs.VERSION }}"
+            git push
+          fi
           git tag "sdk-v${{ steps.version.outputs.VERSION }}"
-          git push
           git push --tags

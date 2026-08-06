@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Loader2, AlertCircle, Radio, Database, ChevronDown, FileJson, HardDrive } from 'lucide-react'
+import { Loader2, AlertCircle, Radio, Database, ChevronDown, FileJson, HardDrive, Activity as ActivityIcon } from 'lucide-react'
 import { useDatabases } from '@/hooks/useDatabases'
 import { useCollections } from '@/hooks/useCollections'
 import { useDocuments } from '@/hooks/useDocuments'
@@ -8,8 +8,9 @@ import { DocumentTable } from '@/components/DocumentTable'
 import { Dashboard } from '@/components/Dashboard'
 import { RulesEditor } from '@/components/RulesEditor'
 import { StorageBrowser } from '@/components/StorageBrowser'
+import { Activity } from '@/components/Activity'
 
-type View = 'dashboard' | 'collection' | 'rules' | 'storage'
+type View = 'dashboard' | 'collection' | 'rules' | 'storage' | 'activity'
 
 export default function App() {
   const [adminKey, setAdminKey] = useState<string | null>(() => localStorage.getItem('ezbase_admin_key'))
@@ -213,8 +214,19 @@ export default function App() {
             ))}
           </div>
 
-          {/* Rules & Storage nav items */}
+          {/* Activity, Rules & Storage nav items */}
           <div className="border-t border-zinc-800 px-3 py-3 space-y-1">
+            <button
+              onClick={() => { setSelected(null); setView('activity') }}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
+                view === 'activity'
+                  ? 'bg-sky-400/10 text-sky-400'
+                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+              }`}
+            >
+              <ActivityIcon className="h-3.5 w-3.5" />
+              <span>Activity</span>
+            </button>
             <button
               onClick={() => { setSelected(null); setView('rules') }}
               className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
@@ -245,6 +257,8 @@ export default function App() {
           {view === 'dashboard' && (
             <Dashboard stats={stats} onSelectCollection={selectCollection} />
           )}
+
+          {view === 'activity' && <Activity adminKey={adminKey} />}
 
           {view === 'rules' && <RulesEditor adminKey={adminKey} />}
 

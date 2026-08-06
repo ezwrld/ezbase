@@ -34,6 +34,20 @@ volumes:
 
 Zero config — just start it. One service, one port (7003), one volume (`/data`). Console UI at `http://localhost:7003/console`.
 
+For a real deployment with auth, set these on the ezbase service:
+
+```yaml
+    environment:
+      ADMIN_KEY: "your-secret-admin-key"
+      EZBASE_URL: "https://ez.myapp.com"              # public URL — trusted origin + OAuth callbacks
+      EZBASE_TRUSTED_ORIGINS: "https://myapp.com"     # if your frontend is on another domain
+      SMTP_HOST: "smtp.resend.com"                    # for password-reset emails (optional —
+      SMTP_USER: "resend"                             #  without SMTP, reset links print to logs)
+      SMTP_PASS: "re_..."
+      SMTP_FROM: "MyApp <no-reply@myapp.com>"
+      # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET etc. — see docs/OAUTH-PROVIDERS.md
+```
+
 ```bash
 # Get your auto-generated admin key from the logs
 docker compose logs ezbase | grep ADMIN_KEY
@@ -259,11 +273,32 @@ ez.auth.restoreSession(savedToken, savedUser)
 
 After `signUp` or `signIn`, the SDK auto-attaches the session token to all requests. No manual header management.
 
+### Passwords — reset & change
+
+```typescript
+// Forgot password: emails a reset link (requires SMTP_* env on the server;
+// without SMTP the link is printed to server logs — `ez logs server`).
+// redirectTo = the page in YOUR app that receives ?token=...
+await ez.auth.requestPasswordReset('alice@example.com', 'https://myapp.com/reset')
+
+// On your reset page, complete it with the token from the URL:
+await ez.auth.resetPassword('newPassword123', tokenFromUrl)
+
+// Signed-in user changing their own password:
+await ez.auth.changePassword('oldPassword', 'newPassword123')  // revokes other sessions by default
+
+// Admin: set any user's password directly (no SMTP needed, revokes their sessions).
+// Also grants email/password sign-in to OAuth-only users.
+await admin.auth.setPassword(userId, 'newPassword123')
+```
+
+**Frontends on a different domain than ezbase** (e.g. app at `myapp.com`, ezbase at `ez.myvps.com`): browsers send an `Origin` header, and ezbase only trusts `EZBASE_URL` by default. Add your app origins via `EZBASE_TRUSTED_ORIGINS=https://myapp.com,https://admin.myapp.com` or auth requests get 403 `INVALID_ORIGIN`.
+
 ### OAuth Providers
 
 ezbase supports OAuth sign-in (Google, GitHub, Microsoft, Apple) via BetterAuth. Providers are enabled by setting env vars — no code changes to the server.
 
-**Setup:**
+**Setup** (step-by-step credential acquisition for each provider: [docs/OAUTH-PROVIDERS.md](OAUTH-PROVIDERS.md)):
 
 1. Create an OAuth app with your provider (e.g. Google Cloud Console, GitHub Developer Settings)
 2. Set the callback URL to `{your-ezbase-url}/api/auth/callback/{provider}` (e.g. `https://myapp.com/api/auth/callback/google`)
@@ -461,6 +496,8 @@ const myFiles = await ez.storage('documents').list()
 
 #### Bucket permissions in rules.json
 
+Buckets accept a single level or a read/write split (`{ "read": "public", "write": "authenticated" }` — delete counts as write; missing side falls back to `default`).
+
 ```json
 {
   "default": "public",
@@ -486,6 +523,8 @@ import type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser, FileMeta, Ru
 ```
 
 ## Rules & Permissions
+
+> **Deep dive with Firebase-rule translations, multi-tenancy recipes, and enforcement details: [docs/RULES.md](RULES.md)**
 
 Permissions are defined in `rules.json` — a single file per ezbase instance. Two ways to manage it:
 
@@ -519,6 +558,13 @@ Permissions are defined in `rules.json` — a single file per ezbase instance. T
 - `"owner"` is sugar for `{ "access": "authenticated", "filter": { "userId": "auth.id" } }`
 - `default` is fallback for unlisted collections, also supports `{ "read": "public", "write": "authenticated" }`
 - If only `read` or `write` is specified, the other falls back to `default`
+
+**Fresh instances default to `{ "read": "public", "write": "authenticated" }`** — anyone can read, writes need a signed-in user or the admin key. Set `"default": "public"` explicitly to open writes (the server logs a warning when you do).
+
+**Filters are enforced on writes, not just reads:**
+- **Create**: missing filter fields are **auto-stamped** (in an `owner` collection, `add({ title })` gets `userId` set to the caller automatically); a mismatching value is rejected with 403 — users can't create docs outside their own scope.
+- **Update (PATCH)**: changing a filter field to a value outside the caller's scope is rejected — docs can't be moved between users/orgs.
+- **Replace (PUT) / delete**: only allowed on docs already matching the caller's filters, and replacement data must stay in scope.
 
 ### Permission levels
 
@@ -691,7 +737,10 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 | PUT | `/auth/users/:id/role` | `{ role: "mover" }` |
 | PUT | `/auth/users/:id/claims` | `{ orgId: "123" }` (replaces all claims) |
 | PATCH | `/auth/users/:id/claims` | `{ tier: "pro" }` (merges, `null` deletes key) |
+| PUT | `/auth/users/:id/password` | `{ password: "..." }` (min 8 chars; revokes user's sessions) |
 | DELETE | `/auth/users/:id` | — (deletes user + sessions + accounts) |
+
+Password flows (BetterAuth, no admin key needed): `POST /auth/request-password-reset` `{ email, redirectTo? }` (emails a link, or logs it server-side without SMTP), `POST /auth/reset-password` `{ newPassword, token }`, `POST /auth/change-password` `{ currentPassword, newPassword, revokeOtherSessions? }` (bearer token required).
 
 ### Databases
 
@@ -748,6 +797,16 @@ Upload request: `POST` with `multipart/form-data`, field name `file`. Returns `F
 
 One-liner off-site backup: `curl -H "Authorization: Bearer $ADMIN_KEY" https://your-host/api/backups/latest -o backup.tar.gz` (create one first with `POST /backups`). Roll back one collection by one day: `POST /backups/latest/restore` with `{ "collections": ["default/teams"], "before": <ms>, "conflict": "replace" }`. See `docs/BACKUPS.md` for the full format.
 
+### Analytics (admin only)
+
+Built-in request analytics — every API call is aggregated into per-minute buckets (internal table, 14-day retention). The console's Activity page is built on these:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/analytics/summary` | Totals + per-op breakdown + top collections. `?hours=24` |
+| GET | `/analytics/timeseries` | Per-minute `{ts, requests, errors, avgMs}` buckets. `?minutes=60&database=&collection=` |
+| GET | `/analytics/live` | SSE stream of requests as they happen (`?token=<admin-key>` for EventSource) |
+
 ### Other
 
 | Method | Path | Description |
@@ -771,7 +830,12 @@ One-liner off-site backup: `curl -H "Authorization: Bearer $ADMIN_KEY" https://y
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ADMIN_KEY` | No | Admin password. Auto-generated if not set (printed to logs). To rotate: change this and restart. |
-| `EZBASE_URL` | Only for OAuth | Public URL for OAuth callback URLs (e.g. `https://myapp.com`). |
+| `EZBASE_URL` | For OAuth + browser auth | Public URL — trusted auth origin + OAuth callback URLs (e.g. `https://myapp.com`). |
+| `EZBASE_TRUSTED_ORIGINS` | If frontend on another domain | Extra origins allowed for browser auth, comma-separated. |
+| `SMTP_HOST` | For reset/verification emails | SMTP server (Resend, Postmark, SES, Mailgun, ...). Unset = links print to server logs. |
+| `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | SMTP details. Port default 587 (465 = implicit TLS). |
+| `EZBASE_REQUIRE_EMAIL_VERIFICATION` | No | `true` = users must verify email before signing in. Needs SMTP. |
+| `EZBASE_RATE_LIMIT` | No | Auth brute-force limiting (3 attempts/10s per IP on sign-in/sign-up/change-password). **Always on**; `false` disables — only for test stacks that hammer auth endpoints. |
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
 | `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |
@@ -797,15 +861,16 @@ One-liner off-site backup: `curl -H "Authorization: Bearer $ADMIN_KEY" https://y
 
 ### User-owned data
 
-```typescript
-// Store userId with documents
-await ez.collection('notes').add({
-  title: 'My note',
-  content: '...',
-  userId: ez.auth.currentUser!.id,
-})
+With `"notes": "owner"` in rules.json, ownership is fully automatic for signed-in users:
 
-// Query by userId on your backend
+```typescript
+// userId is auto-stamped from the session — no need to set it
+await ez.collection('notes').add({ title: 'My note', content: '...' })
+
+// Reads/updates/deletes are automatically scoped to the caller's own docs
+const myNotes = await ez.collection('notes').get()
+
+// On your backend (admin key bypasses rules), query any user's docs:
 const userNotes = await adminEz.collection('notes')
   .where('userId', '==', requestUserId)
   .get()

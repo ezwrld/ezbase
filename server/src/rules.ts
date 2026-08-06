@@ -22,10 +22,13 @@ export interface ReadWriteRule {
 export type RuleValue = PermissionLevel | ReadWriteRule
 export type DefaultRule = string | { read?: string; write?: string }
 
+/** Bucket rule: a single level, or separate read/write levels (no filters) */
+export type BucketRule = string | { read?: string; write?: string }
+
 export interface RulesFile {
   default: DefaultRule
   collections?: Record<string, RuleValue>
-  buckets?: Record<string, string>
+  buckets?: Record<string, BucketRule>
 }
 
 export interface ResolvedRule {
@@ -43,8 +46,22 @@ export interface AppliedFilter {
 
 const RULES_PATH = process.env.RULES_PATH || '/data/rules.json'
 
-let currentRules: RulesFile = { default: 'public' }
+// Secure default for fresh instances: anyone can read, writes need a signed-in
+// user (or the admin key). Set `"default": "public"` in rules.json to open writes.
+const DEFAULT_RULES: RulesFile = { default: { read: 'public', write: 'authenticated' } }
+
+let currentRules: RulesFile = DEFAULT_RULES
 let readonly = false
+
+function warnIfPublicWrites(rules: RulesFile) {
+  const def = rules.default
+  const write = typeof def === 'string' ? def : def.write ?? 'public'
+  if (write === 'public') {
+    console.warn(
+      'ezbase: WARNING — default write access is "public": anyone can create, modify, and delete documents in collections without explicit rules. Set {"default":{"read":"public","write":"authenticated"}} in rules.json unless this is intentional.'
+    )
+  }
+}
 
 // ── Validation ────────────────────────────────────────────────
 
@@ -125,7 +142,16 @@ export function validateRules(rules: unknown): rules is RulesFile {
   if (r.buckets !== undefined) {
     if (typeof r.buckets !== 'object' || r.buckets === null) return false
     for (const [, value] of Object.entries(r.buckets as Record<string, unknown>)) {
-      if (typeof value !== 'string' || !isValidLevel(value)) return false
+      if (typeof value === 'string') {
+        if (!isValidLevel(value)) return false
+      } else if (typeof value === 'object' && value !== null) {
+        const rw = value as Record<string, unknown>
+        if ('read' in rw && (typeof rw.read !== 'string' || !isValidLevel(rw.read))) return false
+        if ('write' in rw && (typeof rw.write !== 'string' || !isValidLevel(rw.write))) return false
+        if (!('read' in rw) && !('write' in rw)) return false
+      } else {
+        return false
+      }
     }
   }
 
@@ -138,8 +164,8 @@ export async function loadRules() {
   try {
     if (!fs.existsSync(RULES_PATH)) {
       try {
-        fs.writeFileSync(RULES_PATH, JSON.stringify({ default: 'public' }, null, 2) + '\n')
-        console.log('ezbase: created default rules.json')
+        fs.writeFileSync(RULES_PATH, JSON.stringify(DEFAULT_RULES, null, 2) + '\n')
+        console.log('ezbase: created default rules.json (public read, authenticated write)')
       } catch (err: any) {
         if (err.code === 'EROFS' || err.code === 'EACCES') {
           readonly = true
@@ -157,6 +183,7 @@ export async function loadRules() {
       return
     }
     currentRules = parsed
+    warnIfPublicWrites(currentRules)
 
     // Check writability
     try {
@@ -268,12 +295,18 @@ export function getRuleForCollection(
   return resolvePermissionLevel(rule)
 }
 
-export function getBucketAccess(bucket: string): string {
-  const access = currentRules.buckets?.[bucket]
-  if (access) return access
-  // Fall back to default (string only for buckets)
+export function getBucketAccess(bucket: string, action: 'read' | 'write' | 'delete' = 'read'): string {
+  const side = action === 'read' ? 'read' : 'write'
+
+  const rule = currentRules.buckets?.[bucket]
+  if (typeof rule === 'string') return rule
+  if (rule && rule[side]) return rule[side]!
+
+  // Missing side / unlisted bucket falls back to the default — reads use the
+  // read level, writes/deletes the write level (mirrors collection fallback)
   const def = currentRules.default
-  return typeof def === 'string' ? def : 'public'
+  if (typeof def === 'string') return def
+  return def[side] ?? 'public'
 }
 
 export function resolveFilters(

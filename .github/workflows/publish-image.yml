@@ -9,6 +9,11 @@ on:
       - 'nginx/**'
       - 'docker/**'
       - 'Dockerfile'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact version to release (e.g. 1.0). Empty = auto-bump minor from latest tag.'
+        required: false
 
 jobs:
   build-and-push:
@@ -24,16 +29,20 @@ jobs:
       - name: Determine next version
         id: version
         run: |
-          # Find the latest v* tag, default to 0.0.0
-          LATEST=$(git tag -l 'v*' --sort=-v:refname | head -n1 | sed 's/^v//')
-          if [ -z "$LATEST" ]; then
-            LATEST="0.0.0"
+          # Manual dispatch with an explicit version wins (e.g. "1.0" for a major
+          # launch). Otherwise major.minor auto-bump: find the latest v* tag (old
+          # three-part tags are read fine — the patch digit is ignored), bump minor.
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            NEXT="${{ github.event.inputs.version }}"
+          else
+            LATEST=$(git tag -l 'v*' --sort=-v:refname | head -n1 | sed 's/^v//')
+            if [ -z "$LATEST" ]; then
+              LATEST="0.0"
+            fi
+            MAJOR=$(echo $LATEST | cut -d. -f1)
+            MINOR=$(echo $LATEST | cut -d. -f2)
+            NEXT="$MAJOR.$((MINOR + 1))"
           fi
-          # Bump patch
-          MAJOR=$(echo $LATEST | cut -d. -f1)
-          MINOR=$(echo $LATEST | cut -d. -f2)
-          PATCH=$(echo $LATEST | cut -d. -f3)
-          NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
           echo "VERSION=$NEXT" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU

@@ -21,6 +21,12 @@ The complete SDK reference, REST API docs, auth patterns, and integration guide:
 
 https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/skill.md
 
+Deep dives:
+
+- Rules & security (permissions, owner data, roles vs claims, multi-tenancy): https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/RULES.md
+- OAuth provider credentials (Google, GitHub, Microsoft, Apple): https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/OAUTH-PROVIDERS.md
+- Backups & restore: https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/BACKUPS.md
+
 ## Links
 
 - GitHub: https://github.com/ezwrld/ezbase

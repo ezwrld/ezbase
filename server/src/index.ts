@@ -10,6 +10,7 @@ import { auth, initAuth } from './auth.js'
 import { loadRules, watchRules, rulesRoutes, legacyPermissionRoutes, dbLegacyPermissionRoutes } from './rules.js'
 import { storageRoutes } from './storage.js'
 import { backupRoutes } from './backups.js'
+import { analyticsMiddleware, analyticsRoutes, initAnalytics } from './analytics.js'
 
 const { basePath } = getPublicUrl()
 const app = basePath ? new Hono().basePath(basePath) : new Hono()
@@ -17,6 +18,7 @@ const app = basePath ? new Hono().basePath(basePath) : new Hono()
 app.use('*', logger())
 app.use('*', cors())
 app.use('*', extractAuth)
+app.use('*', analyticsMiddleware())
 
 // Auth routes
 app.route('/api/auth', auth)
@@ -40,6 +42,9 @@ app.route('/api', storageRoutes)
 
 // Backup/restore routes (admin-only)
 app.route('/api', backupRoutes)
+
+// Analytics routes (admin-only)
+app.route('/api', analyticsRoutes)
 
 // Rules API routes (admin-only)
 app.route('/api', rulesRoutes)
@@ -68,7 +73,7 @@ initConfig()
 await migrateToSchemas()
 await loadRules()
 watchRules()
-await Promise.all([init(), initPubSub(), initAuth()])
+await Promise.all([init(), initPubSub(), initAuth(), initAnalytics()])
 
 console.log(`ezbase running on :${port}`)
 
