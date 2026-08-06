@@ -33,7 +33,7 @@ function requireStorageAccess(action: 'read' | 'write' | 'delete') {
     if (role === 'admin') return next()
 
     const bucket = c.req.param('bucket')!
-    const access = getBucketAccess(bucket)
+    const access = getBucketAccess(bucket, action)
 
     if (access === 'public') {
       return next()

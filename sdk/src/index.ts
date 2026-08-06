@@ -249,6 +249,46 @@ class AuthClient {
     return res.json()
   }
 
+  // ── Password management ────────────────────────────────────
+
+  /**
+   * Email a password-reset link (requires SMTP on the server; without SMTP the
+   * link is printed to server logs). `redirectTo` is the page in YOUR app the
+   * link lands on — it receives ?token=..., which you pass to resetPassword().
+   */
+  async requestPasswordReset(email: string, redirectTo?: string): Promise<void> {
+    const res = await fetch(`${this.ez['url']}/api/auth/request-password-reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, ...(redirectTo ? { redirectTo } : {}) }),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+  }
+
+  /** Complete a password reset with the token from the emailed link */
+  async resetPassword(newPassword: string, token: string): Promise<void> {
+    const res = await fetch(`${this.ez['url']}/api/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newPassword, token }),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+  }
+
+  /** Change the signed-in user's password */
+  async changePassword(currentPassword: string, newPassword: string, opts?: { revokeOtherSessions?: boolean }): Promise<void> {
+    const res = await fetch(`${this.ez['url']}/api/auth/change-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      body: JSON.stringify({
+        currentPassword,
+        newPassword,
+        revokeOtherSessions: opts?.revokeOtherSessions ?? true,
+      }),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+  }
+
   // ── Admin user management ──────────────────────────────────
 
   async listUsers(opts?: { limit?: number; offset?: number }): Promise<AuthUser[]> {
@@ -269,6 +309,16 @@ class AuthClient {
     })
     if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
+  }
+
+  /** Admin: set a user's password directly (revokes their sessions). Works without SMTP. */
+  async setPassword(userId: string, password: string): Promise<void> {
+    const res = await fetch(`${this.ez['url']}/api/auth/users/${encodeURIComponent(userId)}/password`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      body: JSON.stringify({ password }),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
   }
 
   async setRole(userId: string, role: string): Promise<AuthUser> {

@@ -5,6 +5,8 @@ import { getMigrations } from 'better-auth/db/migration'
 import pg from 'pg'
 import { sql } from './db.js'
 import { getAuthSecret, getPublicUrl } from './config.js'
+import { generateId } from './id.js'
+import { sendMail, isMailConfigured } from './mail.js'
 
 // pg.Pool is only here because BetterAuth requires it.
 // All other queries use the postgres.js `sql` instance from db.ts.
@@ -41,12 +43,58 @@ if (process.env.APPLE_CLIENT_ID && process.env.APPLE_CLIENT_SECRET) {
 
 const { origin: publicOrigin, basePath: publicBasePath } = getPublicUrl()
 
+// Extra origins allowed to make browser auth requests (frontends on other
+// domains than EZBASE_URL). Comma-separated, e.g. "https://app.example.com,https://admin.example.com"
+const trustedOrigins = [
+  publicOrigin,
+  ...(process.env.EZBASE_TRUSTED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
+]
+
+// Brute-force protection — always on (3 attempts/10s per IP on sign-in/sign-up/
+// change-password, per BetterAuth defaults). EZBASE_RATE_LIMIT=false is the one
+// escape hatch, for test stacks that hammer auth endpoints from a single IP.
+const rateLimitEnabled = process.env.EZBASE_RATE_LIMIT !== 'false'
+
+const requireEmailVerification = process.env.EZBASE_REQUIRE_EMAIL_VERIFICATION === 'true'
+if (requireEmailVerification && !isMailConfigured()) {
+  console.warn('ezbase: EZBASE_REQUIRE_EMAIL_VERIFICATION is on but SMTP is not configured — verification links will only appear in server logs')
+}
+
+async function deliverAuthEmail(kind: string, to: string, subject: string, url: string) {
+  if (isMailConfigured()) {
+    try {
+      await sendMail({ to, subject, text: `${subject}:\n\n${url}\n\nIf you didn't request this, ignore this email.` })
+      return
+    } catch (err) {
+      console.error(`ezbase: failed to send ${kind} email to ${to}:`, err)
+    }
+  }
+  // No SMTP (or send failed) — surface the link in server logs so self-hosters
+  // can still complete the flow: `ez logs server | grep <kind>`
+  console.log(`ezbase: ${kind} link for ${to}: ${url}`)
+}
+
 const authOptions = {
   baseURL: publicOrigin,
   basePath: `${publicBasePath}/api/auth`,
   database: pool,
   secret: getAuthSecret(),
-  emailAndPassword: { enabled: true, minPasswordLength: 8 },
+  trustedOrigins,
+  rateLimit: { enabled: rateLimitEnabled },
+  emailAndPassword: {
+    enabled: true,
+    minPasswordLength: 8,
+    requireEmailVerification,
+    sendResetPassword: async ({ user, url }: { user: { email: string }; url: string }) => {
+      await deliverAuthEmail('password-reset', user.email, 'Reset your password', url)
+    },
+  },
+  emailVerification: {
+    sendOnSignUp: requireEmailVerification,
+    sendVerificationEmail: async ({ user, url }: { user: { email: string }; url: string }) => {
+      await deliverAuthEmail('email-verification', user.email, 'Verify your email', url)
+    },
+  },
   session: { expiresIn: 7 * 24 * 60 * 60 },
   plugins: [bearer()],
   socialProviders,
@@ -224,6 +272,43 @@ auth.patch('/users/:id/claims', async (c) => {
 
   const rows = await sql`UPDATE public."user" SET claims = ${JSON.stringify(existing)} WHERE id = ${id} RETURNING *`
   return c.json(formatUser(rows[0]))
+})
+
+// ── PUT /users/:id/password — set password (admin only) ─────
+// Ops escape hatch: works without SMTP, also grants email/password
+// sign-in to users who only ever signed up via OAuth.
+auth.put('/users/:id/password', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  const id = c.req.param('id')
+  const { password } = await c.req.json()
+  if (typeof password !== 'string' || password.length < 8) {
+    return c.json({ error: 'password is required (min 8 characters)' }, 400)
+  }
+
+  const users = await sql`SELECT id FROM public."user" WHERE id = ${id}`
+  if (users.length === 0) return c.json({ error: 'User not found' }, 404)
+
+  const ctx = await ba.$context
+  const hash = await ctx.password.hash(password)
+
+  const existing = await sql`
+    SELECT id FROM public."account" WHERE "userId" = ${id} AND "providerId" = 'credential'
+  `
+  if (existing.length > 0) {
+    await sql`UPDATE public."account" SET password = ${hash}, "updatedAt" = NOW() WHERE id = ${existing[0].id}`
+  } else {
+    await sql`
+      INSERT INTO public."account" (id, "accountId", "providerId", "userId", password, "createdAt", "updatedAt")
+      VALUES (${generateId()}, ${id}, 'credential', ${id}, ${hash}, NOW(), NOW())
+    `
+  }
+
+  // Password changed out-of-band — revoke every existing session
+  await sql`DELETE FROM public."session" WHERE "userId" = ${id}`
+
+  return c.json({ success: true })
 })
 
 // ── DELETE /users/:id — delete user (admin only) ────────────

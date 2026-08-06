@@ -8,6 +8,7 @@ services:
     environment:
       ADMIN_KEY: "test-admin-key"
       BETTER_AUTH_SECRET: "test-auth-secret"
+      EZBASE_RATE_LIMIT: "false"   # suites hammer auth endpoints; prod image has limiting on by default
     volumes:
       - ezdata:/data
 

@@ -36,6 +36,49 @@ function sanitizeField(field: string): string {
   return field
 }
 
+/**
+ * Enforce rule filters on incoming document data (create/replace).
+ * Single-value filter fields (e.g. owner's userId = auth.id) are auto-stamped
+ * when absent — `add({ text })` just works — and rejected on mismatch, so users
+ * can't create docs outside their own scope. Array-valued filters (array claims)
+ * can't be auto-picked: the field is required and must be one of the allowed values.
+ * Returns an error message, or null if `data` is valid (possibly mutated by stamping).
+ */
+function enforceFiltersOnWrite(data: Record<string, unknown>, filters: AppliedFilter[]): string | null {
+  for (const f of filters) {
+    if (f.values) {
+      if (data[f.field] === undefined) {
+        return `Field "${f.field}" is required (must be one of your permitted values)`
+      }
+      if (!f.values.includes(String(data[f.field]))) {
+        return `Field "${f.field}" must be one of your permitted values`
+      }
+    } else if (f.value !== null) {
+      if (data[f.field] === undefined) {
+        data[f.field] = f.value
+      } else if (String(data[f.field]) !== f.value) {
+        return `Field "${f.field}" must be "${f.value}"`
+      }
+    }
+  }
+  return null
+}
+
+/** PATCH may not move a doc out of the caller's filter scope */
+function patchViolatesFilters(patch: Record<string, unknown>, filters: AppliedFilter[]): string | null {
+  for (const f of filters) {
+    if (patch[f.field] === undefined) continue
+    if (f.values) {
+      if (!f.values.includes(String(patch[f.field]))) {
+        return `Field "${f.field}" must be one of your permitted values`
+      }
+    } else if (f.value !== null && String(patch[f.field]) !== f.value) {
+      return `Field "${f.field}" must be "${f.value}"`
+    }
+  }
+  return null
+}
+
 function docMatchesFilters(data: Record<string, unknown>, filters: AppliedFilter[]): boolean {
   for (const f of filters) {
     const docValue = String(data[f.field] ?? '')
@@ -296,6 +339,13 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const table = qualifiedTable(database, collection)
 
     const body = await c.req.json()
+
+    const createFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    if (createFilters) {
+      const err = enforceFiltersOnWrite(body, createFilters)
+      if (err) return c.json({ error: err }, 403)
+    }
+
     const id = generateId()
     const now = Date.now()
 
@@ -374,6 +424,13 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     }
 
     const body = await c.req.json()
+
+    // Replacement data must also stay inside the caller's filter scope
+    if (putFilters) {
+      const err = enforceFiltersOnWrite(body, putFilters)
+      if (err) return c.json({ error: err }, 403)
+    }
+
     const now = Date.now()
 
     const rows = await sql`
@@ -409,6 +466,13 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     }
 
     const body = await c.req.json()
+
+    // A patch may not move the doc out of the caller's filter scope
+    if (patchFilters) {
+      const err = patchViolatesFilters(body, patchFilters)
+      if (err) return c.json({ error: err }, 403)
+    }
+
     const now = Date.now()
 
     const rows = await sql`

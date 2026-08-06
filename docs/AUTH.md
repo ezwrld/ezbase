@@ -1,6 +1,6 @@
 # Auth — BetterAuth Integration
 
-**Status:** Implemented. Email/password + OAuth providers (Google, GitHub, Microsoft, Apple).
+**Status:** Implemented. Email/password + OAuth providers (Google, GitHub, Microsoft, Apple), password reset/change (SMTP via `SMTP_*` env vars; links log to server console without SMTP), admin set-password, optional email verification (`EZBASE_REQUIRE_EMAIL_VERIFICATION`), brute-force rate limiting (always on — 3 attempts/10s per IP on sensitive endpoints; `EZBASE_RATE_LIMIT=false` only for test stacks; nginx overwrites `X-Forwarded-For` so the per-IP buckets can't be spoofed), cross-domain browser auth via `EZBASE_TRUSTED_ORIGINS`.
 
 ## Why BetterAuth
 

@@ -197,6 +197,19 @@ async function testOwnerPermission() {
   const docA = await userA.collection('auth_owner_col').add({ title: 'A-doc', userId: idA })
   assert(!!docA.id, 'user A can create in owner collection')
 
+  // userId is auto-stamped when omitted — add({ title }) just works
+  const autoDoc = await userA.collection('auth_owner_col').add({ title: 'A-auto' })
+  assert(autoDoc.data.userId === idA, 'owner userId auto-stamped on create')
+  await userA.collection('auth_owner_col').doc(autoDoc.id).delete()
+
+  // ...and can't be spoofed to another user
+  try {
+    await userA.collection('auth_owner_col').add({ title: 'spoof', userId: 'someone-else' })
+    assert(false, 'spoofed userId should be rejected')
+  } catch {
+    assert(true, 'spoofed userId rejected on create')
+  }
+
   // User A sees their doc
   const aDocs = await userA.collection('auth_owner_col').get()
   assert(aDocs.length === 1 && aDocs[0].data.userId === idA, 'user A sees only their own docs')
@@ -399,9 +412,27 @@ async function testFilterEnforcementOnMutations() {
     assert(true, 'user blocked from deleting non-matching doc')
   }
 
-  // Can create (POST) — filters don't block creates
-  const created = await client.collection('auth_mutation_filter').add({ orgId: 'whatever', val: 'new' })
-  assert(!!created.id, 'user can create docs (filters don\'t block POST)')
+  // Creates are scoped to the caller's filter values
+  const created = await client.collection('auth_mutation_filter').add({ orgId: 'auburn', val: 'new' })
+  assert(!!created.id, 'user can create doc matching their filter scope')
+
+  const stamped = await client.collection('auth_mutation_filter').add({ val: 'auto' })
+  assert(stamped.data.orgId === 'auburn', 'missing filter field is auto-stamped on create')
+
+  try {
+    await client.collection('auth_mutation_filter').add({ orgId: 'whatever', val: 'spoof' })
+    assert(false, 'spoofed filter field should be rejected on create')
+  } catch {
+    assert(true, 'spoofed filter field rejected on create (403)')
+  }
+
+  // A patch may not move the doc out of the caller's scope
+  try {
+    await client.collection('auth_mutation_filter').doc(created.id).update({ orgId: 'oxford' })
+    assert(false, 'patch should not move doc out of filter scope')
+  } catch {
+    assert(true, 'patch cannot move doc out of filter scope')
+  }
 
   // Can delete own doc
   await client.collection('auth_mutation_filter').doc(myDoc.id).delete()
@@ -532,6 +563,7 @@ async function testBucketPermissions() {
       auth_admin_bucket: 'admin',
       auth_role_bucket: 'role:uploader',
       auth_owner_bucket: 'owner',
+      auth_split_bucket: { read: 'public', write: 'authenticated' },
     },
   })
 
@@ -558,6 +590,23 @@ async function testBucketPermissions() {
     body: makeFile('anon-fail'),
   })
   assert(anonAuthUpload.status === 401, 'authenticated bucket: anonymous upload → 401')
+
+  // Split bucket — public read, authenticated write
+  const splitAnonUp = await fetch(`${URL}/api/storage/auth_split_bucket`, { method: 'POST', body: makeFile('split') })
+  assert(splitAnonUp.status === 401, 'split bucket: anonymous upload → 401')
+  const { client: splitUser } = await createUser('auth-split-bucket@test.com')
+  const splitToken = (splitUser.auth as any)._getToken()
+  const splitUp = await fetch(`${URL}/api/storage/auth_split_bucket`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${splitToken}` },
+    body: makeFile('split-ok'),
+  })
+  assert(splitUp.status === 201, 'split bucket: authenticated upload succeeds')
+  const splitMeta = await splitUp.json()
+  const splitAnonDown = await fetch(`${URL}/api/storage/${splitMeta.path}`)
+  assert(splitAnonDown.ok, 'split bucket: anonymous download succeeds (public read)')
+  const splitAnonDel = await fetch(`${URL}/api/storage/${splitMeta.path}`, { method: 'DELETE' })
+  assert(splitAnonDel.status === 401, 'split bucket: anonymous delete → 401 (delete = write side)')
 
   // Authenticated bucket — user can upload
   const { client: authUser } = await createUser('auth-bucket@test.com')
@@ -831,6 +880,58 @@ async function testSSEWithAuthFilters() {
 
 // ── Main ─────────────────────────────────────────────────────
 
+// ── Password management ──────────────────────────────────────
+
+async function testPasswordManagement() {
+  console.log('\n== Password management ==')
+
+  const email = 'pw-mgmt@test.com'
+  const { client, userId } = await createUser(email)
+
+  // change-password (signed-in user)
+  await client.auth.changePassword('testpass123', 'newpass456x')
+  const c2 = new EzBase({ url: URL })
+  let oldRejected = false
+  try {
+    await c2.auth.signIn({ email, password: 'testpass123' })
+  } catch {
+    oldRejected = true
+  }
+  assert(oldRejected, 'changePassword: old password rejected')
+  await c2.auth.signIn({ email, password: 'newpass456x' })
+  assert(c2.auth.currentUser?.id === userId, 'changePassword: new password signs in')
+
+  // admin set-password (no SMTP required)
+  await admin.auth.setPassword(userId, 'adminset789x')
+  const c3 = new EzBase({ url: URL })
+  await c3.auth.signIn({ email, password: 'adminset789x' })
+  assert(c3.auth.currentUser?.id === userId, 'admin setPassword: new password signs in')
+
+  // admin set-password revokes existing sessions
+  const staleToken = (c2.auth as any)._getToken()
+  const meRes = await fetch(`${URL}/api/auth/me`, { headers: { Authorization: `Bearer ${staleToken}` } })
+  assert(meRes.status === 401, 'admin setPassword revokes existing sessions')
+
+  // reset request always accepted (link goes to email, or server logs without SMTP)
+  await c3.auth.requestPasswordReset(email)
+  assert(true, 'requestPasswordReset accepted')
+
+  // validation
+  const short = await apiFetch(`/auth/users/${userId}/password`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: 'short' }),
+  })
+  assert(short.status === 400, 'admin setPassword rejects short passwords')
+
+  const nonAdmin = await fetch(`${URL}/api/auth/users/${userId}/password`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${(c3.auth as any)._getToken()}` },
+    body: JSON.stringify({ password: 'sneaky12345' }),
+  })
+  assert(nonAdmin.status === 403, 'non-admin cannot set passwords')
+}
+
 async function main() {
   console.log('ezbase Auth & Authorization test suite')
   console.log(`URL: ${URL}`)
@@ -855,6 +956,7 @@ async function main() {
   await testBucketPermissions()
   await testNestedClaimPaths()
   await testSessionLifecycle()
+  await testPasswordManagement()
   await testReadWriteSplitWithFilters()
   await testDefaultFallback()
   await testSSEWithAuthFilters()

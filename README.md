@@ -49,7 +49,11 @@ Console at `http://localhost:7003/console`.
 
 ## Docs
 
-[**docs/skill.md**](docs/skill.md) — Full SDK & integration reference.
+[**docs/skill.md**](docs/skill.md) — Full SDK & integration reference. **This is the one file to give an AI agent** ("set up ezbase in this project using https://github.com/ezwrld/ezbase/blob/master/docs/skill.md") — it covers setup, the SDK, auth, rules, storage, and the REST API. Also served at [`llms.txt`](llms.txt).
+
+[docs/RULES.md](docs/RULES.md) — rules & security: permissions, owner data, roles vs claims, multi-tenancy.
+[docs/OAUTH-PROVIDERS.md](docs/OAUTH-PROVIDERS.md) — acquiring Google/GitHub/Microsoft/Apple OAuth credentials.
+[docs/BACKUPS.md](docs/BACKUPS.md) — backup & restore.
 
 ## Development
 

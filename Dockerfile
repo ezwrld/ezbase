@@ -33,6 +33,8 @@ RUN apt-get update \
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:${PATH}"
 
+ENV NODE_ENV=production
+
 # Create directories
 RUN mkdir -p \
     /data/postgres \

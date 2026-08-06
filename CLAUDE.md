@@ -15,7 +15,9 @@ Detailed specs and plans live in `docs/`:
 | `docs/VISION.md` | Full product vision, feature specs, SDK API surface, console pages, security model |
 | `docs/STORAGE.md` | File storage plan — filesystem + metadata in Postgres, SDK surface, backup strategy |
 | `docs/DISTRIBUTION.md` | Packaging, versioning, GitHub Actions, how to use ezbase in other projects |
+| `docs/RULES.md` | **Rules & security** — permission levels, filters, Firebase translations, multi-tenancy, write enforcement |
 | `docs/AUTH.md` | BetterAuth integration details |
+| `docs/OAUTH-PROVIDERS.md` | Acquiring OAuth credentials per provider (Google, GitHub, Microsoft, Apple) |
 | `docs/CI-CD.md` | GitHub Actions workflows (OIDC publishing, Docker builds) |
 | `docs/skill.md` | **Canonical SDK & integration reference** — the one file for building with ezbase |
 | `docs/ROADMAP.md` | Architecture decisions and roadmap |
@@ -27,11 +29,12 @@ Detailed specs and plans live in `docs/`:
 - **Query filtering** — `where`, `orderBy`, `order`, `limit`
 - **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), auto-created on first write
 - **Per-collection tables** — each collection gets its own `col_<name>` Postgres table with GIN indexes
-- **Auth** — BetterAuth (email/password, OAuth providers, session tokens), per-collection permissions (public/authenticated/admin/owner/role:*), custom claims, user management endpoints, shared across databases
+- **Auth** — BetterAuth (email/password, OAuth providers, session tokens), per-collection permissions (public/authenticated/admin/owner/role:*), custom claims, user management endpoints, shared across databases. Password reset/change (SMTP via `SMTP_*` env, or links logged without it), admin set-password, optional email verification, brute-force rate limiting always on (`EZBASE_RATE_LIMIT=false` for test stacks only), `EZBASE_TRUSTED_ORIGINS` for cross-domain frontends
 - **Rules** — Declarative `rules.json` for per-collection access control + claim-based document filters (replaces `_ezbase_config` Postgres table)
 - **File Storage** — upload/download/delete files via REST, stored on disk (Docker volume), metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json`
 - **Backups** — streaming tar.gz backups (JSONL per collection + manifest + auth + storage + rules), granular restore (per database/collection/part), query-filtered restore (`where` + time bounds), conflict modes (replace/skip/error), `ez backup --stdout` piping for off-site — see `docs/BACKUPS.md`
-- **Console** — React + Vite + Tailwind SPA with database selector, live-updating document tables, rules editor, and storage browser
+- **Analytics** — built-in request analytics: every API call classified + aggregated into per-minute buckets (internal `_ezbase_metrics` table, 14-day retention), admin endpoints for summary/timeseries/live SSE feed, Activity page in console
+- **Console** — React + Vite + Tailwind SPA with database selector, live-updating document tables, Activity dashboard (stat tiles, requests/min chart, top collections, live request feed), rules editor, and storage browser
 - **SDK** — zero-dependency TypeScript client, works in Node/Bun/Deno/browsers
 - **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`, `ez backup`, `ez restore`
 - **Distribution setup** — Dockerfile (all-in-one image), GitHub Actions for npm + GHCR publishing
@@ -73,6 +76,7 @@ Verify: `curl http://localhost:7003/api/health`
 | `server/src/index.ts` | Entry point, mounts API at `/api` |
 | `server/src/storage.ts` | File storage routes: upload, download, list, delete, head |
 | `server/src/backups.ts` | Backup/restore engine: streaming tar.gz create, list/download/delete, filtered restore |
+| `server/src/analytics.ts` | Request analytics: classification middleware, minute-bucket aggregation, summary/timeseries/live endpoints |
 | `server/src/routes.ts` | CRUD, SSE, query building |
 | `server/src/auth.ts` | BetterAuth instance + `/me` handler + user management endpoints |
 | `server/src/middleware.ts` | Auth extraction (BetterAuth sessions + claims), permission checks via rules |
@@ -117,6 +121,9 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | DELETE | `/backups/:name` | Delete backup (admin) |
 | POST | `/backups/:name/restore` | Restore from server backup (admin, RestoreOptions body) |
 | POST | `/restore` | Restore from uploaded tar.gz (admin, `?options=<json>`) |
+| GET | `/analytics/summary` | Activity totals, per-op breakdown, top collections (admin, `?hours=`) |
+| GET | `/analytics/timeseries` | Per-minute request buckets (admin, `?minutes=&database=&collection=`) |
+| GET | `/analytics/live` | Live request feed via SSE (admin) |
 | GET | `/rules` | Get rules.json + readonly flag (admin) |
 | PUT | `/rules` | Replace entire rules.json (admin, 409 if readonly) |
 | PUT | `/rules/collections/:col` | Update single collection rule (admin, 409 if readonly) |
@@ -131,6 +138,10 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | PUT | `/auth/users/:id/role` | Set user role (admin) |
 | PUT | `/auth/users/:id/claims` | Replace user claims (admin) |
 | PATCH | `/auth/users/:id/claims` | Merge user claims (admin, null deletes key) |
+| PUT | `/auth/users/:id/password` | Set user password (admin, revokes sessions) |
+| POST | `/auth/request-password-reset` | Email reset link (or log it if no SMTP) |
+| POST | `/auth/reset-password` | Complete reset with token |
+| POST | `/auth/change-password` | Change own password (authenticated) |
 | DELETE | `/auth/users/:id` | Delete user + sessions (admin) |
 | POST | `/auth/sign-in/social` | OAuth redirect (BetterAuth) |
 | GET | `/auth/callback/:provider` | OAuth callback (BetterAuth) |
@@ -140,6 +151,8 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with GIN index on `data`. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
 
 Collection permissions are defined in `/data/rules.json` (one file per instance, covers all databases). Format:
+
+Fresh instances default to `{"read": "public", "write": "authenticated"}`; the server warns at boot if the effective write default is `public`. Rule filters are enforced on writes too: creates auto-stamp missing single-value filter fields (owner's `userId` etc.) and reject mismatches; PATCH cannot move a doc out of the caller's filter scope.
 
 ```json
 {
@@ -156,7 +169,7 @@ Collection permissions are defined in `/data/rules.json` (one file per instance,
     "public_feed": "public"
   },
   "buckets": {
-    "avatars": "authenticated",
+    "avatars": { "read": "public", "write": "authenticated" },
     "documents": "owner",
     "public_assets": "public"
   }
@@ -169,6 +182,10 @@ Permission levels: `public`, `authenticated`, `admin`, `owner` (sugar for `{ acc
 
 ## Releasing
 
-Automatic on merge to master. GitHub Actions detect what changed:
-- `sdk/**` changed → bumps SDK patch version, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.X.X`
-- `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → bumps image patch version, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.X.X`
+Automatic on merge to master, major.minor versioning (minor bumps per release). GitHub Actions detect what changed:
+- `sdk/**` changed → bumps SDK minor version, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0)
+- `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → bumps image minor version, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.Y`
+
+Controlling versions explicitly:
+- **Image**: run the "Publish Docker image" workflow manually (workflow_dispatch) with an exact `version` input (e.g. `1.0`) — it builds, tags `v1.0`, and future merges auto-bump from there.
+- **SDK**: `sdk/package.json` is authoritative — set it to any unpublished version and the workflow publishes it as-is; otherwise it auto-bumps minor.
