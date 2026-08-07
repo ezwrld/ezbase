@@ -1,6 +1,6 @@
 # ezbase
 
-> Self-hosted document database. Firebase-level DX, zero vendor lock-in.
+> Self-hosted backend in one Docker container: NoSQL document store on Postgres, auth, access rules, file storage, realtime, backups, analytics.
 
 ezbase is a single Docker image that wraps Postgres (JSONB, GIN indexes, LISTEN/NOTIFY), BetterAuth (email/password, sessions), and Hono behind a TypeScript SDK and REST API. You get schemaless documents, real-time SSE subscriptions, auth with per-collection permissions, and an admin console — no SQL, no migrations, no config.
 

@@ -1,37 +1,8 @@
 # ezbase
 
-**The entire backend for a small SaaS in one Docker container.** Document database, auth, permissions, file storage, realtime, backups, analytics — self-hosted on your box, wrapped in a Firebase-grade SDK.
+Self-hosted backend in a single Docker container: a NoSQL document store on Postgres, plus auth, per-collection access rules, file storage, realtime subscriptions, backups, request analytics, and an admin console. TypeScript SDK and a plain REST API.
 
-```typescript
-const ez = new EzBase({ url: 'https://ez.yourapp.com' })
-await ez.collection('todos').add({ title: 'Ship it', done: false })
-```
-
-That's a real write to a real Postgres. No schema, no migrations, no ORM, no cloud bill.
-
-## Why it's good
-
-**It's glue, not a new database.** ezbase doesn't reimplement hard problems — it wires battle-tested tools together behind one dead-simple API: **Postgres** (JSONB + GIN indexes) does storage and querying, **BetterAuth** does sessions, password hashing, and OAuth, **nginx** fronts it. You get the reliability of boring infrastructure with the DX of Firebase — and none of the lock-in.
-
-**Rules that do the work for you.** Declare who can touch what in one JSON file — and unlike Firestore, the rules *are* the query, and writes are scoped automatically:
-
-```json
-{ "collections": { "api_keys": "owner" } }
-```
-
-```typescript
-// Signed-in user. Note: no uid handling ANYWHERE.
-await ez.collection('api_keys').add({ name: 'prod', key })  // userId stamped server-side
-const mine = await ez.collection('api_keys').get()          // only this user's keys
-```
-
-Users can't read each other's docs, can't create docs as someone else, can't move docs across scope boundaries. Roles (`role:admin`), multi-tenant claims (`orgId`), and public/authenticated splits included. Fresh instances are locked down by default.
-
-**Auth out of the box, zero config.** `ez.auth.signUp({ email, password })` works on a fresh container. Add env vars when you want Google/GitHub/Microsoft/Apple sign-in, SMTP password-reset emails, or email verification. Brute-force rate limiting is always on.
-
-**Your data stays yours.** `ez backup` streams one inspectable tar.gz — pipe it to your laptop or S3 (`ez backup | aws s3 cp - s3://…`). Restore everything, one collection, or "just the docs matching this query from before things went wrong." Any machine can open the archive with plain `tar`.
-
-**You can see what's happening.** Built-in analytics (per-minute request metrics, per-collection traffic, live request feed) and an admin console: browse documents live, edit rules, manage users and files.
+ezbase is a collection of open-source tools wired together behind one API rather than a new database engine: Postgres (JSONB + GIN indexes) handles storage and querying, [BetterAuth](https://better-auth.com) handles sessions, password hashing, and OAuth, nginx fronts the stack. One image, one port (7003), one volume (`/data`).
 
 ## Quick Start
 
@@ -58,44 +29,62 @@ npm install @ezwrld/ezbase
 import { EzBase } from '@ezwrld/ezbase'
 
 const ez = new EzBase({ url: 'http://localhost:7003' })
+
 await ez.collection('todos').add({ title: 'Ship it', done: false })
-const todos = await ez.collection('todos').get()
+const todos = await ez.collection('todos').where('done', '==', false).get()
 
 // Realtime
 ez.collection('todos').onSnapshot((docs) => render(docs))
 ```
 
-Console at `http://localhost:7003/console` (admin key prints in the logs on first boot).
+Collections are created on first write — no schema, no migrations. Admin console at `http://localhost:7003/console` (admin key prints in the logs on first boot).
 
-## What's inside
+## Auth and access rules
 
-- **Documents** — schemaless JSONB, collections created on first write, `where/orderBy/limit` queries
-- **Realtime** — SSE subscriptions on collections, queries, or single docs
-- **Auth** — email/password + OAuth, sessions, roles, custom claims, password reset, admin user management
-- **Rules** — per-collection read/write permissions with owner/role/claim filters, enforced on reads *and* writes
+Email/password auth works with no configuration; OAuth providers (Google, GitHub, Microsoft, Apple) are enabled via env vars. Access control is one JSON file (`rules.json`), editable in the console:
+
+```json
+{
+  "default": { "read": "public", "write": "authenticated" },
+  "collections": {
+    "api_keys": "owner",
+    "invoices": { "access": "authenticated", "filter": { "orgId": "claims.orgId" } },
+    "reports":  { "read": "role:admin", "write": "admin" }
+  }
+}
+```
+
+Rule filters are applied to queries automatically and enforced on writes: in an `owner` collection, `add({ name })` gets `userId` set server-side from the session, reads return only the caller's documents, and writes outside the caller's scope are rejected. Details and recipes: [docs/RULES.md](docs/RULES.md).
+
+## Features
+
+- **Documents** — schemaless JSONB, per-collection Postgres tables, `where`/`orderBy`/`limit` queries
+- **Realtime** — SSE subscriptions on collections, queries, or single documents
+- **Auth** — email/password, OAuth, sessions, roles, custom claims, password reset (SMTP or logged links), admin user management, always-on brute-force rate limiting
+- **Rules** — per-collection read/write permissions with owner/role/claim filters, enforced on reads and writes; secure defaults on fresh instances
 - **File storage** — buckets with the same permission model
-- **Backups** — streaming tar.gz, granular + query-filtered restore, pipeable off-box
-- **Analytics** — request metrics + live activity feed in the console
+- **Backups** — streaming tar.gz (JSONL per collection + manifest), granular and query-filtered restore, pipeable: `ez backup | aws s3 cp - s3://…`
+- **Analytics** — per-minute request metrics and a live request feed in the console
 - **Multi-database** — isolated databases per instance, shared auth
-- **SDK** — zero-dependency TypeScript, works in Node/Bun/Deno/browsers; plus a plain REST API for everything else
+- **SDK** — zero-dependency TypeScript, works in Node/Bun/Deno/browsers
 
-## Building with AI agents
+## Using with AI agents
 
-Give your agent one URL and it knows the whole system:
+The complete reference is one file, written to be consumed by agents:
 
 ```
-Set up ezbase in this project: https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/skill.md
+https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/skill.md
 ```
 
-[`llms.txt`](llms.txt) lists every reference. Running instances report their version at `/api/health`; [`CHANGELOG.md`](CHANGELOG.md) carries upgrade considerations for every release — minor versions never break, breaking changes only ever land in a new major.
+[`llms.txt`](llms.txt) lists all reference URLs. Running instances report their version at `GET /api/health`; [`CHANGELOG.md`](CHANGELOG.md) documents upgrade considerations per release. Versioning is `major.minor`: minor releases are additive; breaking changes only occur in a new major and are marked in the changelog.
 
 ## Docs
 
-- [**docs/skill.md**](docs/skill.md) — the complete reference: SDK, REST API, auth, rules, storage, backups
-- [docs/RULES.md](docs/RULES.md) — security & permissions, with Firebase-rule translations
-- [docs/OAUTH-PROVIDERS.md](docs/OAUTH-PROVIDERS.md) — getting Google/GitHub/Microsoft/Apple credentials
-- [docs/BACKUPS.md](docs/BACKUPS.md) — backup & restore
-- [CHANGELOG.md](CHANGELOG.md) — releases + upgrade considerations
+- [docs/skill.md](docs/skill.md) — complete reference: SDK, REST API, auth, rules, storage, backups
+- [docs/RULES.md](docs/RULES.md) — access rules and security model
+- [docs/OAUTH-PROVIDERS.md](docs/OAUTH-PROVIDERS.md) — acquiring OAuth provider credentials
+- [docs/BACKUPS.md](docs/BACKUPS.md) — backup and restore
+- [CHANGELOG.md](CHANGELOG.md) — releases and upgrade considerations
 
 ## Development
 
@@ -107,13 +96,13 @@ source setup.sh && ez up
 ## Roadmap
 
 - [x] Documents + queries + realtime + multi-database
-- [x] Auth (BetterAuth), roles, claims, password management
-- [x] Rules with write-scope enforcement + secure defaults
+- [x] Auth, roles, claims, password management
+- [x] Rules with write-scope enforcement
 - [x] File storage with bucket permissions
 - [x] Backups & restore
-- [x] Built-in analytics + console Activity page
+- [x] Request analytics + console Activity page
 - [x] 1.0
-- [ ] Type inference — generate TypeScript types from your live data, with conformance reporting
+- [ ] Type inference — generate TypeScript types from live data, with conformance reporting
 - [ ] Full-text search (Meilisearch)
 - [ ] Backup scheduling, restore points, S3 push
 
