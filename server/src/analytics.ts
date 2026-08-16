@@ -37,7 +37,13 @@ export interface RequestEvent {
 
 const COLLECTION_RE = /^\/api(?:\/db\/([^/]+))?\/collections\/([^/]+)(\/.*)?$/
 
+function withoutBasePath(path: string) {
+  const apiStart = path.search(/\/api(?:\/|$)/)
+  return apiStart === -1 ? path : path.slice(apiStart)
+}
+
 export function classifyRequest(method: string, path: string): Pick<RequestEvent, 'op' | 'database' | 'collection'> {
+  path = withoutBasePath(path)
   const m = path.match(COLLECTION_RE)
   if (m) {
     const database = m[1] || 'default'
@@ -87,8 +93,9 @@ export function recordRequest(event: RequestEvent) {
 export function analyticsMiddleware() {
   return async (c: Context, next: Next) => {
     const path = new URL(c.req.url).pathname
+    const apiPath = withoutBasePath(path)
     // Don't record ourselves or the health probe
-    if (path === '/api/health' || path.startsWith('/api/analytics')) return next()
+    if (apiPath === '/api/health' || apiPath.startsWith('/api/analytics')) return next()
 
     const start = Date.now()
     const { op, database, collection } = classifyRequest(c.req.method, path)
