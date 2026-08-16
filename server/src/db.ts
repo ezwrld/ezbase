@@ -21,6 +21,11 @@ const ensuredDatabases = new Set<string>()
 const pendingDatabases = new Map<string, Promise<void>>()
 const pendingCollections = new Map<string, Promise<void>>()
 
+export function shouldCreateDataIndex(name: string) {
+  const excluded = (process.env.EZBASE_GIN_EXCLUDE || '').split(',').map((value) => value.trim())
+  return !excluded.includes(name)
+}
+
 function isDuplicateDdlError(err: unknown): boolean {
   const code = (err as { code?: string })?.code
   return code === '23505' || code === '42P07' || code === '42710'
@@ -110,7 +115,9 @@ export async function ensureCollection(database: string, name: string) {
           updated_at BIGINT NOT NULL
         )
       `
-      await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
+      if (shouldCreateDataIndex(name)) {
+        await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
+      }
       await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_created`)} ON ${table} (created_at)`
 
       ensured.add(cacheKey)

@@ -13,6 +13,14 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.2 — 2026-08-16
+
+### Added
+- `EZBASE_GIN_EXCLUDE` skips the automatic full-document GIN index for named, comma-separated collections whose write cost outweighs filtered reads.
+
+### Upgrade considerations
+- None. The default remains unchanged.
+
 ## v1.1 — 2026-08-16
 
 ### Fixed
