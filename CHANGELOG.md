@@ -13,6 +13,15 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.1 — 2026-08-16
+
+### Fixed
+- Request analytics now classify collections correctly when ezbase is mounted below a public base path.
+- Health and analytics requests below a public base path are no longer recorded as admin traffic.
+
+### Upgrade considerations
+- None.
+
 ## v1.0 — 2026-08-06
 
 The 1.0 launch. SDK `@ezwrld/ezbase@1.0.0`.
