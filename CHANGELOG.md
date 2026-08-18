@@ -13,6 +13,14 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.3 — 2026-08-17
+
+### Added
+- Collection and query reads support typed SDK `.select('name', 'status')` and REST `fields=name,status` projection. EzBase projects top-level document data in Postgres before returning it. The document envelope is always included, and reads without selection are unchanged.
+
+### Upgrade considerations
+- None.
+
 ## v1.2 — 2026-08-16
 
 ### Added

@@ -543,6 +543,10 @@ class CollectionRef<T = Record<string, unknown>> {
     return new QueryRef<T>(this.ez, this.db, this.name).limit(n)
   }
 
+  select<K extends Extract<keyof T, string>>(...fields: K[]): QueryRef<T, Pick<T, K>> {
+    return new QueryRef<T>(this.ez, this.db, this.name).select(...fields)
+  }
+
   async add(data: Partial<T>): Promise<Document<T>> {
     const res = await fetch(this._basePath(), {
       method: 'POST',
@@ -688,11 +692,12 @@ class FileHandle {
 }
 
 // ── Query reference (chainable) ──────────────────────────────
-class QueryRef<T = Record<string, unknown>> {
+class QueryRef<T = Record<string, unknown>, Result = T> {
   private wheres: WhereClause[] = []
   private _orderBy?: string
   private _order?: OrderDir
   private _limit?: number
+  private _fields?: string[]
 
   constructor(
     private ez: EzBase,
@@ -716,6 +721,12 @@ class QueryRef<T = Record<string, unknown>> {
     return this
   }
 
+  select<K extends Extract<keyof T, string>>(...fields: K[]): QueryRef<T, Pick<T, K>> {
+    if (fields.length === 0) throw new Error('select() requires at least one field')
+    this._fields = Array.from(new Set(fields))
+    return this as unknown as QueryRef<T, Pick<T, K>>
+  }
+
   private buildParams(): string {
     const params = new URLSearchParams()
     if (this.wheres.length > 0) {
@@ -728,6 +739,9 @@ class QueryRef<T = Record<string, unknown>> {
     if (this._limit !== undefined) {
       params.set('limit', String(this._limit))
     }
+    if (this._fields) {
+      params.set('fields', this._fields.join(','))
+    }
     const qs = params.toString()
     return qs ? '?' + qs : ''
   }
@@ -736,7 +750,7 @@ class QueryRef<T = Record<string, unknown>> {
     return `${this.db._basePath()}/collections/${encodeURIComponent(this.collection)}`
   }
 
-  async get(): Promise<Document<T>[]> {
+  async get(): Promise<Document<Result>[]> {
     const url = `${this._basePath()}${this.buildParams()}`
     const res = await fetch(url, { headers: this.ez._authHeaders() })
     if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
@@ -744,7 +758,7 @@ class QueryRef<T = Record<string, unknown>> {
   }
 
   onSnapshot(
-    callback: (docs: Document<T>[]) => void,
+    callback: (docs: Document<Result>[]) => void,
     onError?: (err: Error) => void
   ): () => void {
     const base = `${this._basePath()}/sse${this.buildParams()}`
