@@ -32,6 +32,7 @@ const ez = new EzBase({ url: 'http://localhost:7003' })
 
 await ez.collection('todos').add({ title: 'Ship it', done: false })
 const todos = await ez.collection('todos').where('done', '==', false).get()
+const titles = await ez.collection('todos').select('title').get()
 
 // Realtime
 ez.collection('todos').onSnapshot((docs) => render(docs))
@@ -58,7 +59,7 @@ Rule filters are applied to queries automatically and enforced on writes: in an 
 
 ## Features
 
-- **Documents** — schemaless JSONB, per-collection Postgres tables, `where`/`orderBy`/`limit` queries
+- **Documents** — schemaless JSONB, per-collection Postgres tables, `where`/`orderBy`/`limit` queries, typed top-level `select`
 - **Realtime** — SSE subscriptions on collections, queries, or single documents
 - **Auth** — email/password, OAuth, sessions, roles, custom claims, password reset (SMTP or logged links), admin user management, always-on brute-force rate limiting
 - **Rules** — per-collection read/write permissions with owner/role/claim filters, enforced on reads and writes; secure defaults on fresh instances

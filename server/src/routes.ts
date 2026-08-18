@@ -36,6 +36,28 @@ function sanitizeField(field: string): string {
   return field
 }
 
+function parseFields(value?: string): string[] | undefined {
+  if (value === undefined) return undefined
+
+  const fields = value.split(',').map((field) => field.trim())
+  if (fields.length === 0 || fields.length > 64 || fields.some((field) => !field)) {
+    throw new Error('fields must contain 1 to 64 comma-separated field names')
+  }
+
+  return Array.from(new Set(fields.map(sanitizeField)))
+}
+
+function selectClause(fields?: string[]): string {
+  if (!fields) return '*'
+
+  const names = fields.map((field) => `'${field}'`).join(', ')
+  return `id, COALESCE((
+    SELECT jsonb_object_agg(entry.key, entry.value)
+    FROM jsonb_each(data) AS entry
+    WHERE entry.key IN (${names})
+  ), '{}'::jsonb) AS data, created_at, updated_at`
+}
+
 /**
  * Enforce rule filters on incoming document data (create/replace).
  * Single-value filter fields (e.g. owner's userId = auth.id) are auto-stamped
@@ -99,9 +121,10 @@ function buildQuery(
   order?: string,
   limitParam?: string,
   docFilters?: AppliedFilter[],
-  offsetParam?: string
+  offsetParam?: string,
+  fields?: string[]
 ) {
-  let query = `SELECT * FROM db_${database}.col_${collection} WHERE true`
+  let query = `SELECT ${selectClause(fields)} FROM db_${database}.col_${collection} WHERE true`
   const params: unknown[] = []
 
   if (docFilters) {
@@ -265,6 +288,12 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const order = c.req.query('order')
     const limitParam = c.req.query('limit')
     const offsetParam = c.req.query('offset')
+    let fields: string[] | undefined
+    try {
+      fields = parseFields(c.req.query('fields'))
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid fields' }, 400)
+    }
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
 
     return streamSSE(c, async (stream) => {
@@ -277,7 +306,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
           order,
           limitParam,
           docFilters,
-          offsetParam
+          offsetParam,
+          fields
         )
         const rows = await sql.unsafe(query, params as any[])
         await stream.writeSSE({
@@ -366,16 +396,23 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     await ensureCollection(database, collection)
 
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
-    const { query, params } = buildQuery(
-      database,
-      collection,
-      c.req.query('where'),
-      c.req.query('orderBy'),
-      c.req.query('order'),
-      c.req.query('limit'),
-      docFilters,
-      c.req.query('offset')
-    )
+    let query: string
+    let params: unknown[]
+    try {
+      ({ query, params } = buildQuery(
+        database,
+        collection,
+        c.req.query('where'),
+        c.req.query('orderBy'),
+        c.req.query('order'),
+        c.req.query('limit'),
+        docFilters,
+        c.req.query('offset'),
+        parseFields(c.req.query('fields'))
+      ))
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
+    }
     const rows = await sql.unsafe(query, params as any[])
     return c.json(rows.map(formatDoc))
   })

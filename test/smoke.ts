@@ -73,13 +73,24 @@ async function main() {
   }
   {
     // doc().set() — PUT (replace)
-    const doc = await admin.collection("todos").doc(docId).set({ title: "Replaced", priority: 1 } as any);
+    const doc = await admin.collection("todos").doc(docId).set({ title: "Replaced", priority: 1, nullable: null } as any);
     assert(doc.data.title === "Replaced", "set() replaces document data");
   }
   {
     // collection().get() — list
     const docs = await admin.collection("todos").get();
     assert(Array.isArray(docs) && docs.length >= 1, "collection().get() lists documents");
+  }
+  {
+    const docs = await admin.collection<{ title: string; priority: number; nullable: null }>("todos")
+      .select("title", "nullable")
+      .get();
+    assert(docs[0]?.id === docId, "select() keeps the document envelope");
+    assert(JSON.stringify(docs[0]?.data) === JSON.stringify({ title: "Replaced", nullable: null }), "select() returns only requested data");
+    const invalid = await fetch(`${URL}/api/collections/todos?fields=title%2Cbad-name`, {
+      headers: { Authorization: `Bearer ${ADMIN_KEY}` },
+    });
+    assert(invalid.status === 400, "fields rejects invalid names");
   }
   {
     // doc().delete()
@@ -114,6 +125,12 @@ async function main() {
       .limit(2)
       .get();
     assert(chained.length === 2 && chained[0]?.data?.score === 50, "chained query works");
+
+    const projected = await admin.collection<{ name: string; score: number }>("items")
+      .where("score", ">", 20)
+      .select("name")
+      .get();
+    assert(projected.length === 3 && Object.keys(projected[0]!.data).join(',') === 'name', "select() composes with queries");
   }
 
   // ── Auth via SDK ────────────────────────────────────────────
@@ -231,6 +248,29 @@ async function main() {
       });
     });
     assert(result === true, "doc().onSnapshot delivers update");
+  }
+  {
+    const result = await new Promise<boolean>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Projected SSE timeout")), 15000);
+      let gotInitial = false;
+
+      const unsub = admin.collection<{ hello: string; internal: string }>("sse_select")
+        .select("hello")
+        .onSnapshot((docs) => {
+          if (!gotInitial) {
+            gotInitial = true;
+            admin.collection("sse_select").add({ hello: "projected", internal: "hidden" });
+          } else if (docs[0]?.data.hello === "projected" && !("internal" in docs[0].data)) {
+            clearTimeout(timeout);
+            unsub();
+            resolve(true);
+          }
+        }, (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+    });
+    assert(result === true, "select().onSnapshot returns projected documents");
   }
 
   // ── Collection name validation ──────────────────────────────

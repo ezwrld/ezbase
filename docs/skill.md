@@ -151,9 +151,27 @@ const results = await ez.collection('todos')
   .orderBy('priority', 'desc')
   .limit(20)
   .get()
+
+// Return only these top-level data fields. id, created, and updated remain.
+const titles = await ez.collection<Todo>('todos')
+  .where('done', '==', false)
+  .select('title', 'priority')
+  .get()
 ```
 
 **Operators:** `==`, `!=`, `<`, `>`, `<=`, `>=`
+
+`.select()` also works directly on a collection and with `.onSnapshot()`. In
+TypeScript, selected document data is inferred as `Pick<T, K>`. Selection is
+top-level in this release. Realtime subscriptions return projected snapshots,
+but still refresh after any matching collection change.
+
+Raw REST reads use plain comma-separated field names. The document envelope
+(`id`, `created`, `updated`) is always included:
+
+```text
+GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
+```
 
 **Sortable/filterable fields:** Any field in your data, plus `created` and `updated` (document timestamps).
 

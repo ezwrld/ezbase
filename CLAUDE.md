@@ -99,7 +99,7 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | DELETE | `/db/:database` | Delete database (admin, cannot delete `default`) |
 | GET | `/collections` | List collection names (default db) |
 | POST | `/collections/:col` | Create document (default db) |
-| GET | `/collections/:col` | List/query documents (default db) |
+| GET | `/collections/:col` | List/query documents (default db; `?fields=name,status`) |
 | GET | `/collections/:col/:id` | Get document (default db) |
 | PUT | `/collections/:col/:id` | Replace document (upsert, default db) |
 | PATCH | `/collections/:col/:id` | Partial update (default db) |
