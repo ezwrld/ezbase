@@ -13,6 +13,14 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## SDK v1.2.0 — 2026-08-18
+
+### Fixed
+- Realtime subscriptions now send session and admin credentials only in the authorization header. Tokens no longer appear in SSE URLs or proxy logs.
+
+### Upgrade considerations
+- None.
+
 ## v1.3 — 2026-08-17
 
 ### Added
