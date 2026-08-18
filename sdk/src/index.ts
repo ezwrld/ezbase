@@ -507,12 +507,6 @@ class EzBase {
     return {}
   }
 
-  /** @internal — append token as query param for SSE (EventSource can't send headers) */
-  _sseTokenParam(): string {
-    const token = this.adminKey || this.auth._getToken()
-    if (token) return `token=${encodeURIComponent(token)}`
-    return ''
-  }
 }
 
 // ── Collection reference ──────────────────────────────────────
@@ -567,10 +561,7 @@ class CollectionRef<T = Record<string, unknown>> {
     callback: (docs: Document<T>[]) => void,
     onError?: (err: Error) => void
   ): () => void {
-    const tp = this.ez._sseTokenParam()
-    const sep = tp ? '?' : ''
-    const url = `${this._basePath()}/sse${sep}${tp}`
-    return sseConnect(url, this.ez._authHeaders(), (data) => callback(JSON.parse(data)), onError)
+    return sseConnect(`${this._basePath()}/sse`, this.ez._authHeaders(), (data) => callback(JSON.parse(data)), onError)
   }
 }
 
@@ -626,10 +617,7 @@ class DocRef<T = Record<string, unknown>> {
     callback: (doc: Document<T> | null) => void,
     onError?: (err: Error) => void
   ): () => void {
-    const tp = this.ez._sseTokenParam()
-    const sep = tp ? '?' : ''
-    const url = `${this.path()}/sse${sep}${tp}`
-    return sseConnect(url, this.ez._authHeaders(), (data) => callback(JSON.parse(data)), onError)
+    return sseConnect(`${this.path()}/sse`, this.ez._authHeaders(), (data) => callback(JSON.parse(data)), onError)
   }
 }
 
@@ -761,10 +749,7 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
     callback: (docs: Document<Result>[]) => void,
     onError?: (err: Error) => void
   ): () => void {
-    const base = `${this._basePath()}/sse${this.buildParams()}`
-    const tp = this.ez._sseTokenParam()
-    const sep = base.includes('?') ? '&' : '?'
-    const url = tp ? `${base}${sep}${tp}` : base
+    const url = `${this._basePath()}/sse${this.buildParams()}`
     return sseConnect(url, this.ez._authHeaders(), (data) => callback(JSON.parse(data)), onError)
   }
 }

@@ -179,6 +179,8 @@ const unsub = ez.collection('todos').onSnapshot(
 )
 ```
 
+Realtime subscriptions use the same bearer authorization header as ordinary SDK reads. Credentials are never added to the subscription URL.
+
 ## Auth
 
 ### Email/password sign in
