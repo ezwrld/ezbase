@@ -5,6 +5,7 @@ import EzBase from '../dist/index.js'
 test('realtime subscriptions send credentials only in the authorization header', async () => {
   const originalFetch = globalThis.fetch
   const requests = []
+  const errors = []
 
   globalThis.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), headers: init.headers })
@@ -16,9 +17,9 @@ test('realtime subscriptions send credentials only in the authorization header',
   try {
     const ez = new EzBase({ url: 'https://ez.test', adminKey: 'top-secret' })
     const stops = [
-      ez.collection('events').onSnapshot(() => {}),
-      ez.collection('events').doc('one').onSnapshot(() => {}),
-      ez.collection('events').where('type', '==', 'sync').limit(5).onSnapshot(() => {}),
+      ez.collection('events').onSnapshot(() => {}, (error) => errors.push(error)),
+      ez.collection('events').doc('one').onSnapshot(() => {}, (error) => errors.push(error)),
+      ez.collection('events').where('type', '==', 'sync').limit(5).onSnapshot(() => {}, (error) => errors.push(error)),
     ]
 
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -30,6 +31,11 @@ test('realtime subscriptions send credentials only in the authorization header',
       assert.equal(request.url.includes('top-secret'), false)
       assert.equal(new URL(request.url).searchParams.has('token'), false)
     }
+    assert.deepEqual(errors.map((error) => error.message), [
+      'SSE connection closed',
+      'SSE connection closed',
+      'SSE connection closed',
+    ])
   } finally {
     globalThis.fetch = originalFetch
   }
