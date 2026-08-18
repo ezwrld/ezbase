@@ -13,6 +13,14 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## SDK v1.3.0 — 2026-08-18
+
+### Fixed
+- A realtime response that ends cleanly now calls the subscription error handler instead of silently freezing the listener.
+
+### Upgrade considerations
+- None.
+
 ## SDK v1.2.0 — 2026-08-18
 
 ### Fixed

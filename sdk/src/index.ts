@@ -96,6 +96,9 @@ function sseConnect(
           }
         }
       }
+      if (!controller.signal.aborted) {
+        onError?.(new Error('SSE connection closed'))
+      }
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== 'AbortError') {
         onError?.(err)

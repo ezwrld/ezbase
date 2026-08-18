@@ -180,6 +180,7 @@ const unsub = ez.collection('todos').onSnapshot(
 ```
 
 Realtime subscriptions use the same bearer authorization header as ordinary SDK reads. Credentials are never added to the subscription URL.
+If the server closes a subscription, the error handler receives `SSE connection closed`; applications can reconnect on their own schedule.
 
 ## Auth
 
