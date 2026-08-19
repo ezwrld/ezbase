@@ -13,6 +13,15 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.4 — 2026-08-19
+
+### Fixed
+- Realtime SSE streams (collection, document, analytics live feed) survive quiet periods. The server now writes a keep-alive comment every 15 seconds and raises Bun's idle timeout to 60 seconds; previously Bun's default 10-second idle kill severed every stream between events, forcing clients into a permanent reconnect loop.
+- Closed SSE connections release their handler state. The keep-alive loop now exits on disconnect and unsubscribes in `finally`; previously every connection ever opened was retained until the process was OOM-killed (observed in production: ~20 KB leaked per connection, 2.6 GB RSS at death under reconnect churn).
+
+### Upgrade considerations
+- None. Keep-alive comments are part of the SSE protocol and invisible to all SDK versions.
+
 ## SDK v1.3.0 — 2026-08-18
 
 ### Fixed

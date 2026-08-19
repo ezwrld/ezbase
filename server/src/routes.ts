@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { keepAlive } from './sse.js'
 import { sql, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
 import { generateId } from './id.js'
 import { publishChange, subscribe } from './pubsub.js'
@@ -271,9 +272,11 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         } catch {}
       })
 
-      stream.onAbort(() => unsub())
-      // keep-alive
-      while (true) await stream.sleep(30000)
+      try {
+        await keepAlive(stream)
+      } finally {
+        unsub()
+      }
     })
   })
 
@@ -324,8 +327,11 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         } catch {}
       })
 
-      stream.onAbort(() => unsub())
-      while (true) await stream.sleep(30000)
+      try {
+        await keepAlive(stream)
+      } finally {
+        unsub()
+      }
     })
   })
 
