@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import type { Context, Next } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { keepAlive } from './sse.js'
 import { sql } from './db.js'
 
 /**
@@ -247,8 +248,11 @@ analyticsRoutes.get('/analytics/live', (c) => {
       stream.writeSSE({ event: 'request', data: JSON.stringify(e) }).catch(() => {})
     }
     liveListeners.add(listener)
-    stream.onAbort(() => liveListeners.delete(listener))
-    while (true) await stream.sleep(30000)
+    try {
+      await keepAlive(stream)
+    } finally {
+      liveListeners.delete(listener)
+    }
   })
 })
 

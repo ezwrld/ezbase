@@ -83,4 +83,7 @@ export default {
   // Bun defaults to ~128MB request bodies — backup restores stream far larger
   // archives. App-level limits still apply (e.g. EZBASE_MAX_FILE_SIZE on storage).
   maxRequestBodySize: 1024 * 1024 * 1024 * 1024,
+  // Bun's default 10s idle kill severs SSE streams between events. Streams
+  // write a keep-alive comment every 15s; 60s reaps genuinely dead sockets.
+  idleTimeout: 60,
 }

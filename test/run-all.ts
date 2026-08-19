@@ -17,6 +17,7 @@ const suites = [
   { name: 'backups', file: 'backups.ts' },
   { name: 'backup-roundtrip', file: 'backup-roundtrip.ts' },
   { name: 'analytics', file: 'analytics.ts' },
+  { name: 'realtime', file: 'realtime.ts' },
 ]
 
 async function waitForHealthy(retries = 30) {
