@@ -18,6 +18,20 @@ function formatDoc(row: Record<string, unknown>) {
   }
 }
 
+export function documentEtag(updated: number): string {
+  return `"${updated}"`
+}
+
+export function parseDocumentEtag(value?: string): number | null {
+  if (value === undefined) return null
+  const match = value.match(/^"([1-9][0-9]*)"$/)
+  const updated = match ? Number(match[1]) : NaN
+  if (!Number.isSafeInteger(updated)) {
+    throw new Error('If-Match must contain one document ETag')
+  }
+  return updated
+}
+
 function mapOp(op: string): string {
   const ops: Record<string, string> = {
     '==': '=',
@@ -444,7 +458,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         return c.json({ error: 'Document not found' }, 404)
       }
     }
-    return c.json(formatDoc(rows[0]))
+    const doc = formatDoc(rows[0])
+    c.header('ETag', documentEtag(doc.updated))
+    return c.json(doc)
   })
 
   app.put('/collections/:collection/:id', async (c) => {
@@ -516,20 +532,41 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       if (err) return c.json({ error: err }, 403)
     }
 
-    const now = Date.now()
+    let expectedUpdated: number | null
+    try {
+      expectedUpdated = parseDocumentEtag(c.req.header('If-Match'))
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid If-Match' }, 400)
+    }
 
-    const rows = await sql`
-      UPDATE ${table} SET data = data || ${sql.json(body)}, updated_at = ${now}
-      WHERE id = ${id}
-      RETURNING *
-    `
+    const now = Date.now()
+    const rows = expectedUpdated === null
+      ? await sql`
+          UPDATE ${table}
+          SET data = data || ${sql.json(body)}, updated_at = GREATEST(${now}, updated_at + 1)
+          WHERE id = ${id}
+          RETURNING *
+        `
+      : await sql`
+          UPDATE ${table}
+          SET data = data || ${sql.json(body)}, updated_at = GREATEST(${now}, updated_at + 1)
+          WHERE id = ${id} AND updated_at = ${expectedUpdated}
+          RETURNING *
+        `
 
     if (rows.length === 0) {
+      if (expectedUpdated !== null) {
+        const existing = await sql`SELECT 1 FROM ${table} WHERE id = ${id}`
+        if (existing.length > 0) {
+          return c.json({ error: 'Document changed; fetch it and retry' }, 412)
+        }
+      }
       return c.json({ error: 'Document not found' }, 404)
     }
 
     const doc = formatDoc(rows[0])
     await publishChange({ type: 'modified', id: doc.id, collection, database })
+    c.header('ETag', documentEtag(doc.updated))
     return c.json(doc)
   })
 

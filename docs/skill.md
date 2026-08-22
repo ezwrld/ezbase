@@ -724,7 +724,7 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 | GET | `/collections/:col` | List / query docs (`?where=...&orderBy=...&order=...&limit=...`) |
 | GET | `/collections/:col/:id` | Get doc (404 if missing) |
 | PUT | `/collections/:col/:id` | Replace doc (upsert) |
-| PATCH | `/collections/:col/:id` | Partial update (merge) |
+| PATCH | `/collections/:col/:id` | Partial update (merge); send the GET `ETag` as `If-Match` for an atomic conditional update |
 | DELETE | `/collections/:col/:id` | Delete doc |
 
 ### Real-time

@@ -93,6 +93,31 @@ async function main() {
     assert(invalid.status === 400, "fields rejects invalid names");
   }
   {
+    const claim = await admin.collection("claims").add({ winner: null });
+    const claimUrl = `${URL}/api/collections/claims/${claim.id}`;
+    const retained = await fetch(claimUrl, {
+      headers: { Authorization: `Bearer ${ADMIN_KEY}` },
+    });
+    const etag = retained.headers.get("etag");
+    assert(/^"[1-9][0-9]*"$/.test(etag || ""), "document GET returns a strong ETag");
+
+    const attempts = await Promise.all(["first", "second"].map((winner) =>
+      fetch(claimUrl, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${ADMIN_KEY}`,
+          "If-Match": etag!,
+        },
+        body: JSON.stringify({ winner }),
+      })
+    ));
+    const statuses = attempts.map((response) => response.status).sort();
+    assert(statuses[0] === 200 && statuses[1] === 412, "one of two same-version PATCH requests wins");
+    const claimed = await admin.collection<{ winner: string }>("claims").doc(claim.id).get();
+    assert(["first", "second"].includes(claimed?.data.winner || ""), "the document retains exactly one winner");
+  }
+  {
     // doc().delete()
     await admin.collection("todos").doc(docId).delete();
     const doc = await admin.collection("todos").doc(docId).get();

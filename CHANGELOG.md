@@ -13,6 +13,15 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.5 — 2026-08-22
+
+### Added
+- Strong `ETag` headers on document reads and conditional PATCH through
+  `If-Match`. A stale writer receives `412 Precondition Failed`.
+
+### Upgrade considerations
+- None. PATCH remains unconditional when `If-Match` is omitted.
+
 ## v1.4 — 2026-08-19
 
 ### Fixed
