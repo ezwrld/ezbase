@@ -36,7 +36,7 @@ This is configured at npmjs.com → `@ezwrld/ezbase` → Settings → Trusted Pu
 **Trigger:** Any push to `master` that changes files in `server/`, `console/`, `nginx/`, `docker/`, or `Dockerfile`.
 
 **What it does:**
-1. Determines next version by finding the latest `v*` tag and bumping patch
+1. Determines next version by finding the latest `v*` tag and bumping **minor** (`1.6` → `1.7`)
 2. Builds the all-in-one Docker image from the root `Dockerfile`
 3. Pushes to GitHub Container Registry as `ghcr.io/ezwrld/ezbase:X.X.X` + `:latest`
 4. Tags `vX.X.X` and pushes the tag
@@ -68,6 +68,8 @@ SDK and image versions are independent. Both auto-increment patch on every quali
 ## Triggering a release
 
 Just merge to master. If your PR touches `sdk/` files, the SDK publishes. If it touches server/console/docker files, the image builds. If both, both run.
+
+**Changelog is the user-facing contract.** The PR must include `## vX.Y` matching the version that will be tagged (current latest image tag + one minor). The image workflow copies that section into the GitHub Release. Include **Upgrade considerations** and an **Agent prompt** (pin `ghcr.io/ezwrld/ezbase:X.Y`, `GET /api/health`, SDK version). Do not tell consuming apps to upgrade until the publish workflow is green.
 
 No manual tagging. No release scripts. No tokens to rotate.
 
