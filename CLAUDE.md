@@ -187,7 +187,11 @@ Automatic on merge to master, major.minor versioning (minor bumps per release). 
 - `sdk/**` changed → bumps SDK minor version, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0)
 - `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → bumps image minor version, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.Y`
 
-**Every release PR must add a `CHANGELOG.md` entry** — `## vX.Y — date` with an **Upgrade considerations** section ("None." if none); breaking changes require a new major version and a **⚠ BREAKING** section. The image workflow auto-creates a GitHub Release from the entry. `/api/health` reports the running version (baked in at image build).
+**Every release PR must add a `CHANGELOG.md` entry** — `## vX.Y — date` matching the version the workflow will mint (latest `v*` tag + 0.1). Required sections: **Upgrade considerations** ("None." if none) and **Agent prompt** (copy-paste for consuming apps: pin the new image, health check, SDK pin, anything they must change). Breaking changes require a new major and a **⚠ BREAKING** section.
+
+The image workflow (`publish-image.yml`) auto-bumps minor, pushes `ghcr.io/ezwrld/ezbase:X.Y`, tags `vX.Y`, and creates the GitHub Release from that CHANGELOG section. `/api/health` reports the version baked in at image build.
+
+**Do not tell consuming apps to upgrade until that workflow is green** and `gh release view vX.Y` exists. Then they only need: “update ezbase” + the Agent prompt.
 
 Controlling versions explicitly:
 - **Image**: run the "Publish Docker image" workflow manually (workflow_dispatch) with an exact `version` input (e.g. `1.0`) — it builds, tags `v1.0`, and future merges auto-bump from there.

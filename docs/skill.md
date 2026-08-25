@@ -855,6 +855,16 @@ For agents maintaining an ezbase deployment:
 2. **Read the changelog before upgrading**: https://raw.githubusercontent.com/ezwrld/ezbase/master/CHANGELOG.md — every release has an **Upgrade considerations** section.
 3. **The versioning promise**: minor releases (`1.0` → `1.1`) never break — pull the new image and restart. **A major-version jump (`1.x` → `2.0`) means breaking changes**: stop and read that entry's **⚠ BREAKING** section before upgrading, and surface it to a human if the migration touches their data or config.
 4. **Pinning**: use a pinned tag (`ghcr.io/ezwrld/ezbase:1.0`) to control when upgrades happen; `:latest` tracks the newest release. Take a backup before any major upgrade: `ez backup` (or `POST /api/backups`).
+5. After a **new ezbase release**, the GitHub Release / CHANGELOG **Agent prompt** is what to paste into the consuming repo (Aura, etc.). Pin the new image tag, confirm `GET /api/health` matches, keep the SDK version the changelog names.
+
+## Shipping an ezbase release (this repo)
+
+For agents working **on ezbase**, not in an app that uses it:
+
+1. Put the next version in `CHANGELOG.md` as `## vX.Y — date` **before merge**. `X.Y` is the current image tag plus one minor (`v1.7` after `v1.6`). The heading must match exactly — the workflow copies that section into the GitHub Release.
+2. Include **Upgrade considerations** and an **Agent prompt** (pin image, health check, SDK pin, behavior apps must change). That is how existing users stay current: they tell their app agent “update ezbase.”
+3. Merge to `master`. `server/**` / `console/**` / `nginx/**` / `docker/**` / `Dockerfile` → image workflow bumps minor, pushes GHCR, tags `vX.Y`. `sdk/**` → npm. Docs-only changes do **not** publish.
+4. Wait until the workflow is green and https://github.com/ezwrld/ezbase/releases/tag/vX.Y exists. Do not tell apps to upgrade on a still-building image. `/api/health` on the new container must report `X.Y`, not `"dev"`.
 
 ## Environment Variables
 

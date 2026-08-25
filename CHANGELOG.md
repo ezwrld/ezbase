@@ -7,7 +7,7 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 - Versions are `major.minor` (image tags `v1.0`, `v1.1`; npm shows `1.0.0`, `1.1.0`).
 - **Minor releases never break you.** New features, fixes, and additive API surface only. Upgrading is: pull the new image, restart.
 - **Breaking changes only ever land in a new major**, and the entry carries a **⚠ BREAKING** section describing exactly what breaks and how to migrate. If you see a major-version jump, read that section before upgrading.
-- Every entry has an **Upgrade considerations** section — "none" means none.
+- Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
 Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:latest` tracks the newest release.
 
