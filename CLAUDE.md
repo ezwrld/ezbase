@@ -77,7 +77,8 @@ Verify: `curl http://localhost:7003/api/health`
 | `server/src/storage.ts` | File storage routes: upload, download, list, delete, head |
 | `server/src/backups.ts` | Backup/restore engine: streaming tar.gz create, list/download/delete, filtered restore |
 | `server/src/analytics.ts` | Request analytics: classification middleware, minute-bucket aggregation, summary/timeseries/live endpoints |
-| `server/src/routes.ts` | CRUD, SSE, query building |
+| `server/src/routes.ts` | CRUD, SSE |
+| `server/src/query.ts` | Query SQL + auto btree indexes for JSON where/orderBy |
 | `server/src/auth.ts` | BetterAuth instance + `/me` handler + user management endpoints |
 | `server/src/middleware.ts` | Auth extraction (BetterAuth sessions + claims), permission checks via rules |
 | `server/src/rules.ts` | Rules engine: load/watch/validate rules.json, resolve filters, API routes, legacy compat |
@@ -148,7 +149,7 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 
 ## Database
 
-Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with GIN index on `data`. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
+Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with GIN on `data` (unless `EZBASE_GIN_EXCLUDE`), btrees on `created_at`/`updated_at`, and auto btrees on JSON fields used in queries. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
 
 Collection permissions are defined in `/data/rules.json` (one file per instance, covers all databases). Format:
 

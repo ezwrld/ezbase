@@ -175,7 +175,9 @@ Raw REST reads use plain comma-separated field names. The document envelope
 GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
 ```
 
-**Sortable/filterable fields:** Any field in your data, plus `created` and `updated` (document timestamps).
+Always pass `.limit()` (or `?limit=`). Lists default to 100 and never return more than 10000 (`EZBASE_MAX_LIMIT`), including with the admin key. `limit=0` is an error.
+
+**Sortable/filterable fields:** Any field in your data, plus `created` and `updated` (document timestamps). Equality filters and `orderBy` on JSON fields create btree indexes automatically (composite of up to three equality fields plus the sort) so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
 
 ### Real-Time (SSE)
 
@@ -843,7 +845,7 @@ Built-in request analytics — every API call is aggregated into per-minute buck
 | `where` | `[["status","==","active"]]` | JSON array of `[field, op, value]` |
 | `orderBy` | `created` | Field to sort by |
 | `order` | `desc` | `asc` or `desc` |
-| `limit` | `20` | Max docs. Non-admin defaults to 100, capped at 10000. Admin unlimited unless set. |
+| `limit` | `20` | Max docs. Defaults to 100 for everyone (including admin key). Hard cap 10000 (`EZBASE_MAX_LIMIT`). `0` / negative → 400. |
 
 ## Upgrading ezbase
 
@@ -865,6 +867,8 @@ For agents maintaining an ezbase deployment:
 | `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | SMTP details. Port default 587 (465 = implicit TLS). |
 | `EZBASE_REQUIRE_EMAIL_VERIFICATION` | No | `true` = users must verify email before signing in. Needs SMTP. |
 | `EZBASE_RATE_LIMIT` | No | Auth brute-force limiting (3 attempts/10s per IP on sign-in/sign-up/change-password). **Always on**; `false` disables — only for test stacks that hammer auth endpoints. |
+| `EZBASE_AUTO_INDEX` | No | `false` disables automatic btree indexes for JSON `where`/`orderBy` fields (keeps GIN `@>` equality). Default is on — first query of a new shape may wait while the index builds. |
+| `EZBASE_GIN_EXCLUDE` | No | Comma-separated collections that skip the full-document GIN index (write-heavy/fat docs). Field btrees still apply. |
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
 | `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |

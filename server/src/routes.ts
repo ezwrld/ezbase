@@ -4,6 +4,7 @@ import { streamSSE } from 'hono/streaming'
 import { keepAlive } from './sse.js'
 import { sql, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
 import { generateId } from './id.js'
+import { parseFields, prepareQuery } from './query.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { canReadCollection, requirePermission } from './middleware.js'
 import type { AppliedFilter } from './rules.js'
@@ -30,47 +31,6 @@ export function parseDocumentEtag(value?: string): number | null {
     throw new Error('If-Match must contain one document ETag')
   }
   return updated
-}
-
-function mapOp(op: string): string {
-  const ops: Record<string, string> = {
-    '==': '=',
-    '!=': '!=',
-    '<': '<',
-    '>': '>',
-    '<=': '<=',
-    '>=': '>=',
-  }
-  return ops[op] || '='
-}
-
-function sanitizeField(field: string): string {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field)) {
-    throw new Error(`Invalid field name: ${field}`)
-  }
-  return field
-}
-
-function parseFields(value?: string): string[] | undefined {
-  if (value === undefined) return undefined
-
-  const fields = value.split(',').map((field) => field.trim())
-  if (fields.length === 0 || fields.length > 64 || fields.some((field) => !field)) {
-    throw new Error('fields must contain 1 to 64 comma-separated field names')
-  }
-
-  return Array.from(new Set(fields.map(sanitizeField)))
-}
-
-function selectClause(fields?: string[]): string {
-  if (!fields) return '*'
-
-  const names = fields.map((field) => `'${field}'`).join(', ')
-  return `id, COALESCE((
-    SELECT jsonb_object_agg(entry.key, entry.value)
-    FROM jsonb_each(data) AS entry
-    WHERE entry.key IN (${names})
-  ), '{}'::jsonb) AS data, created_at, updated_at`
 }
 
 /**
@@ -129,8 +89,6 @@ function docMatchesFilters(data: Record<string, unknown>, filters: AppliedFilter
 }
 
 const MAX_JSON_BYTES = parseInt(process.env.EZBASE_MAX_JSON_BYTES || String(1024 * 1024), 10)
-const DEFAULT_LIMIT = parseInt(process.env.EZBASE_DEFAULT_LIMIT || '100', 10)
-const MAX_LIMIT = parseInt(process.env.EZBASE_MAX_LIMIT || '10000', 10)
 
 async function readJsonBody(c: Context): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
   const declared = parseInt(c.req.header('content-length') || '0', 10)
@@ -142,127 +100,6 @@ async function readJsonBody(c: Context): Promise<{ ok: true; body: Record<string
     return { ok: false, response: c.json({ error: 'Payload too large' }, 413) }
   }
   return { ok: true, body }
-}
-
-function resolveLimit(limitParam: string | undefined, isAdmin: boolean): number | undefined {
-  if (limitParam) {
-    const n = parseInt(limitParam, 10)
-    if (!(n > 0)) return isAdmin ? undefined : DEFAULT_LIMIT
-    return isAdmin ? n : Math.min(n, MAX_LIMIT)
-  }
-  return isAdmin ? undefined : DEFAULT_LIMIT
-}
-
-function buildQuery(
-  database: string,
-  collection: string,
-  whereParam?: string,
-  orderBy?: string,
-  order?: string,
-  limitParam?: string,
-  docFilters?: AppliedFilter[],
-  offsetParam?: string,
-  fields?: string[],
-  isAdmin = false
-) {
-  let query = `SELECT ${selectClause(fields)} FROM db_${database}.col_${collection} WHERE true`
-  const params: unknown[] = []
-
-  if (docFilters) {
-    for (const f of docFilters) {
-      const field = sanitizeField(f.field)
-      if (f.values) {
-        // Array claim values — can't use containment, need ANY()
-        params.push(f.values)
-        query += ` AND data->>'${field}' = ANY($${params.length})`
-      } else if (f.value !== null) {
-        // Single value — use @> containment to leverage GIN index
-        params.push(JSON.stringify({ [field]: f.value }))
-        query += ` AND data @> ($${params.length}::text)::jsonb`
-      }
-    }
-  }
-
-  if (whereParam) {
-    const wheres: [string, string, unknown][] = JSON.parse(whereParam)
-    for (const [field, op, value] of wheres) {
-      const sqlOp = mapOp(op)
-      const idx = params.length + 1
-
-      // Map SDK field names to column names
-      const colName = field === 'created' ? 'created_at' : field === 'updated' ? 'updated_at' : null
-
-      if (colName) {
-        query += ` AND ${colName} ${sqlOp} $${idx}`
-      } else if (typeof value === 'number') {
-        if (op === '==' || op === '!=') {
-          // Numeric equality — use @> containment to leverage GIN index
-          params.push(JSON.stringify({ [sanitizeField(field)]: value }))
-          if (op === '==') {
-            query += ` AND data @> ($${idx}::text)::jsonb`
-          } else {
-            query += ` AND NOT data @> ($${idx}::text)::jsonb`
-          }
-          continue
-        }
-        query += ` AND (data->>'${sanitizeField(field)}')::numeric ${sqlOp} $${idx}`
-      } else if (typeof value === 'boolean') {
-        // Boolean — use @> containment to leverage GIN index
-        params.push(JSON.stringify({ [sanitizeField(field)]: value }))
-        if (op === '==' || op === '!=') {
-          if (op === '==') {
-            query += ` AND data @> ($${idx}::text)::jsonb`
-          } else {
-            query += ` AND NOT data @> ($${idx}::text)::jsonb`
-          }
-          continue
-        }
-        query += ` AND (data->>'${sanitizeField(field)}')::boolean ${sqlOp} $${idx}`
-      } else {
-        // String equality — use @> containment to leverage GIN index
-        if (op === '==' || op === '!=') {
-          params.push(JSON.stringify({ [sanitizeField(field)]: value }))
-          if (op === '==') {
-            query += ` AND data @> ($${idx}::text)::jsonb`
-          } else {
-            query += ` AND NOT data @> ($${idx}::text)::jsonb`
-          }
-          continue
-        }
-        query += ` AND data->>'${sanitizeField(field)}' ${sqlOp} $${idx}`
-      }
-      params.push(value)
-    }
-  }
-
-  if (orderBy) {
-    const dir = (order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC'
-    const colName = orderBy === 'created' ? 'created_at' : orderBy === 'updated' ? 'updated_at' : null
-    if (colName) {
-      query += ` ORDER BY ${colName} ${dir}`
-    } else {
-      // jsonb comparison keeps numbers numeric (data->>'x' is lexical text)
-      query += ` ORDER BY data->'${sanitizeField(orderBy)}' ${dir}`
-    }
-  } else {
-    query += ' ORDER BY created_at DESC'
-  }
-
-  const limit = resolveLimit(limitParam, isAdmin)
-  if (limit !== undefined) {
-    params.push(limit)
-    query += ` LIMIT $${params.length}`
-  }
-
-  if (offsetParam) {
-    const n = parseInt(offsetParam, 10)
-    if (n > 0) {
-      params.push(n)
-      query += ` OFFSET $${params.length}`
-    }
-  }
-
-  return { query, params }
 }
 
 // ── Collection routes factory ────────────────────────────────
@@ -340,7 +177,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
     return streamSSE(c, async (stream) => {
       const sendSnapshot = async () => {
-        const { query, params } = buildQuery(
+        const { query, params } = await prepareQuery(
           database,
           collection,
           whereParam,
@@ -449,7 +286,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     let query: string
     let params: unknown[]
     try {
-      ({ query, params } = buildQuery(
+      ({ query, params } = await prepareQuery(
         database,
         collection,
         c.req.query('where'),
