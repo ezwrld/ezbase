@@ -13,6 +13,40 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.7 — 2026-08-25
+
+Query performance.
+
+### Added
+- Automatic btree indexes for JSON `where` / `orderBy` fields (and composites of up to three equality filters + the sort). First request of a new shape builds the index; later requests are index scans. `EZBASE_AUTO_INDEX=false` keeps the old GIN containment predicates.
+- btree on `updated_at` for every collection (same as `created_at`).
+
+### Fixed
+- List/query/SSE always apply a limit. Default 100, max 10000 (`EZBASE_DEFAULT_LIMIT` / `EZBASE_MAX_LIMIT`), **including admin-key callers**. `limit=0` or negative is `400`.
+- Numeric ranges (`startsAtMs >= x`) and JSON equality use jsonb compare so the new indexes are actually chosen.
+
+SDK unchanged (still `@ezwrld/ezbase@1.4.0` unless we bump).
+
+### Upgrade considerations
+- **Always pass `limit` on list/query/SSE.** Admin key no longer returns an entire collection. If you needed more than 10000 rows in one call, raise `EZBASE_MAX_LIMIT` or page with `offset`.
+- First query of each new filter/sort shape on a large collection will stall while Postgres builds the index (seconds at ~500k docs; minutes possible at millions). After that it stays fast. You can warm indexes by running your real queries once after deploy.
+- No query API change. `where` + `orderBy` + `limit` is the fast path. Nested fields (`game.sport`) are still rejected.
+- `EZBASE_GIN_EXCLUDE` still skips the full-document GIN on fat collections. Field btrees still apply.
+
+### Agent prompt
+Paste this to the app that consumes ezbase (Aura, etc.):
+
+```
+Update this project to ezbase 1.7.
+
+1. Read https://raw.githubusercontent.com/ezwrld/ezbase/master/CHANGELOG.md — the v1.7 entry.
+2. Pin the image to ghcr.io/ezwrld/ezbase:1.7 (compose / fly / whatever runs ezbase). Restart. GET {ezbase}/api/health must report "1.7".
+3. SDK: stay on @ezwrld/ezbase@1.4.0 unless the changelog says otherwise. No client API change.
+4. Every list/query/onSnapshot must pass limit (you probably already do). Admin key is no longer unlimited — a missing limit returns 100 docs, max 10000.
+5. After deploy, hit your real queries once (pending jobs, date-range games, orderBy updated) so indexes build. Expect a one-time delay on big collections.
+6. Do not dump whole collections. Do not mix an unbounded audit log and a job queue in the same collection if both are huge — that is an app data-model issue, not an ezbase query rewrite.
+```
+
 ## v1.6 — 2026-08-25
 
 ### Fixed

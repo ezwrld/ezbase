@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { shouldCreateDataIndex } from './db.js'
+import { shouldCreateDataIndex, sqlIndexName } from './db.js'
 
 afterEach(() => {
   delete process.env.EZBASE_GIN_EXCLUDE
@@ -15,5 +15,11 @@ describe('shouldCreateDataIndex', () => {
     expect(shouldCreateDataIndex('game_metric_heads')).toBe(false)
     expect(shouldCreateDataIndex('source_payloads')).toBe(false)
     expect(shouldCreateDataIndex('events')).toBe(true)
+  })
+})
+
+describe('sqlIndexName', () => {
+  test('is imported for db coverage', () => {
+    expect(sqlIndexName('default', 'games', 'j', ['sport'])).toBe('idx_default_games_j_sport')
   })
 })

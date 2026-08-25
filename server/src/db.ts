@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import postgres from 'postgres'
 
 const sql = postgres(
@@ -20,6 +21,26 @@ const ensuredDatabases = new Set<string>()
 // losers of that race get a catalog duplicate-key error (e.g. 23505 on pg_type).
 const pendingDatabases = new Map<string, Promise<void>>()
 const pendingCollections = new Map<string, Promise<void>>()
+const jsonIndexes = new Set<string>()
+const pendingJsonIndexes = new Map<string, Promise<void>>()
+
+export type QueryIndexHints = {
+  eqFields: string[]
+  jsonFields: string[]
+  orderField: string | null
+}
+
+const IDENT_RE = /^[a-z][a-z0-9_]*$/
+
+export function sqlIndexName(database: string, collection: string, kind: string, parts: string[]): string {
+  const raw = ['idx', database, collection, kind, ...parts].join('_').toLowerCase()
+  if (raw.length <= 63 && IDENT_RE.test(raw)) return raw
+  const h = createHash('sha1')
+    .update(`${database}/${collection}/${kind}/${parts.join(',')}`)
+    .digest('hex')
+    .slice(0, 16)
+  return `idx_${h}`
+}
 
 export function shouldCreateDataIndex(name: string) {
   const excluded = (process.env.EZBASE_GIN_EXCLUDE || '').split(',').map((value) => value.trim())
@@ -119,6 +140,7 @@ export async function ensureCollection(database: string, name: string) {
         await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
       }
       await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_created`)} ON ${table} (created_at)`
+      await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_updated`)} ON ${table} (updated_at)`
 
       ensured.add(cacheKey)
     }).finally(() => pendingCollections.delete(cacheKey))
@@ -180,12 +202,113 @@ export function clearDatabaseCaches(database: string) {
       ensured.delete(key)
     }
   }
+  for (const key of [...jsonIndexes]) {
+    if (key.includes(`_${database}_`) || key.startsWith(`idx_${database}_`)) {
+      jsonIndexes.delete(key)
+    }
+  }
+}
+
+function jsonExpr(field: string): string {
+  return `(data->'${field}')`
+}
+
+async function createIndexOnce(name: string, ddl: string) {
+  if (jsonIndexes.has(name)) return
+  let pending = pendingJsonIndexes.get(name)
+  if (!pending) {
+    pending = (async () => {
+      try {
+        await withDdlRetry(async () => {
+          const t0 = Date.now()
+          await sql.unsafe(ddl)
+          const ms = Date.now() - t0
+          if (ms >= 100) console.log(`  created index ${name} in ${ms}ms`)
+        })
+      } catch (err) {
+        console.error(`failed to create index ${name}:`, err)
+      } finally {
+        jsonIndexes.add(name)
+      }
+    })().finally(() => pendingJsonIndexes.delete(name))
+    pendingJsonIndexes.set(name, pending)
+  }
+  await pending
+}
+
+/**
+ * Firestore-style: btree on JSON fields the query actually uses, plus a
+ * composite of equality filters + orderBy so `where status==pending orderBy
+ * observedAt limit 25` is an index scan instead of GIN + sort.
+ */
+export async function ensureQueryIndexes(
+  database: string,
+  collection: string,
+  hints: QueryIndexHints
+) {
+  const err = validateCollectionName(collection) || validateDatabaseName(database)
+  if (err) throw new Error(err)
+
+  await ensureCollection(database, collection)
+  const table = `db_${database}.col_${collection}`
+
+  for (const field of hints.jsonFields) {
+    const name = sqlIndexName(database, collection, 'j', [field])
+    const expr = jsonExpr(field)
+    await createIndexOnce(
+      name,
+      `CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${expr}) WHERE ${expr} IS NOT NULL`
+    )
+  }
+
+  const orderField = hints.orderField
+  const eq = hints.eqFields.slice(0, 3)
+  if (eq.length === 0 || !orderField) return
+
+  const parts = [...eq]
+  let extra = ''
+  if (orderField === 'created_at' || orderField === 'updated_at') {
+    extra = `, ${orderField}`
+  } else if (!eq.includes(orderField)) {
+    parts.push(orderField)
+  }
+  if (parts.length === 1 && !extra) return
+
+  const name = sqlIndexName(
+    database,
+    collection,
+    'c',
+    extra ? [...parts, orderField] : parts
+  )
+  const cols = parts.map(jsonExpr).join(', ') + extra
+  const partial = eq.length > 0 ? ` WHERE ${jsonExpr(eq[0])} IS NOT NULL` : ''
+  await createIndexOnce(name, `CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${cols})${partial}`)
+}
+
+export async function ensureTimestampIndexes() {
+  const tables = await sql`
+    SELECT n.nspname AS schema, c.relname AS relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname LIKE 'db\_%' ESCAPE '\'
+      AND c.relname LIKE 'col\_%' ESCAPE '\'
+      AND c.relkind = 'r'
+  `
+  for (const row of tables) {
+    const database = String(row.schema).slice(3)
+    const collection = String(row.relname).slice(4)
+    if (validateDatabaseName(database) || validateCollectionName(collection)) continue
+    const table = qualifiedTable(database, collection)
+    await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${collection}_created`)} ON ${table} (created_at)`
+    await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${collection}_updated`)} ON ${table} (updated_at)`
+  }
 }
 
 // ── Init ────────────────────────────────────────────────────
 export async function init() {
   // BetterAuth manages user/session tables in public schema automatically
   await ensureDatabase('default')
+  await ensureTimestampIndexes()
 
   // File storage metadata table (global, in public schema)
   await sql`
