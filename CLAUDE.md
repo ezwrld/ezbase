@@ -95,9 +95,9 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| GET | `/databases` | List database names |
+| GET | `/databases` | List database names (admin) |
 | DELETE | `/db/:database` | Delete database (admin, cannot delete `default`) |
-| GET | `/collections` | List collection names (default db) |
+| GET | `/collections` | List collection names the caller can read (default db) |
 | POST | `/collections/:col` | Create document (default db) |
 | GET | `/collections/:col` | List/query documents (default db; `?fields=name,status`) |
 | GET | `/collections/:col/:id` | Get document (default db) |

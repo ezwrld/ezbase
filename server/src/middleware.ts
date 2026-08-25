@@ -92,3 +92,16 @@ export function requirePermission(getDatabase: (c: Context) => string) {
     }
   }
 }
+
+/** Whether this caller may learn that a collection exists (list endpoint). */
+export function canReadCollection(role: string, collection: string): boolean {
+  if (collection.startsWith('_ezbase_')) return role === 'admin'
+  if (role === 'admin') return true
+
+  const rule = getRuleForCollection(collection, 'read')
+  if (rule.access === 'public') return true
+  if (rule.access === 'authenticated') return role !== 'anonymous'
+  if (rule.access === 'admin') return false
+  if (rule.access.startsWith('role:')) return role === rule.access.slice(5)
+  return false
+}

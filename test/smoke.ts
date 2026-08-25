@@ -151,6 +151,10 @@ async function main() {
       .get();
     assert(chained.length === 2 && chained[0]?.data?.score === 50, "chained query works");
 
+    await admin.collection("items").add({ name: "big", score: 199 });
+    const numericDesc = await admin.collection("items").orderBy("score", "desc").limit(1).get();
+    assert(numericDesc[0]?.data?.score === 199, "orderBy(score, desc) sorts numbers, not strings");
+
     const projected = await admin.collection<{ name: string; score: number }>("items")
       .where("score", ">", 20)
       .select("name")

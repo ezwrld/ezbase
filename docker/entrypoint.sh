@@ -5,7 +5,7 @@ set -e
 if [ ! -f /data/postgres/PG_VERSION ]; then
     echo "ezbase: initializing postgres..."
     chown postgres:postgres /data/postgres
-    su postgres -c "/usr/lib/postgresql/16/bin/initdb -D /data/postgres"
+    su postgres -c "/usr/lib/postgresql/16/bin/initdb -D /data/postgres --encoding=UTF8 --locale=C.UTF-8"
 fi
 
 # Start postgres temporarily to create user/db

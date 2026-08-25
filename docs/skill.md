@@ -83,6 +83,8 @@ const ez = new EzBase({
 })
 ```
 
+There is one SDK, not a separate server package. Jobs and APIs pass `adminKey` and never send it to a browser. `signUp` / `signIn` send `Origin` so they work from Node and Bun, not only from browsers.
+
 ### Documents — CRUD
 
 Collections are created automatically on first write. No setup needed.
@@ -766,7 +768,7 @@ All document/collection/permission/SSE routes also work under `/api/db/:database
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/databases` | List all database names (public) |
+| GET | `/databases` | List all database names (admin) |
 | DELETE | `/db/:database` | Delete a database (admin, cannot delete `default`) |
 | POST | `/db/:db/collections/:col` | Create document in named db |
 | GET | `/db/:db/collections/:col` | List/query docs in named db |
@@ -776,7 +778,7 @@ All document/collection/permission/SSE routes also work under `/api/db/:database
 | DELETE | `/db/:db/collections/:col/:id` | Delete doc in named db |
 | GET | `/db/:db/collections/:col/sse` | SSE stream in named db |
 | GET | `/db/:db/collections/:col/:id/sse` | SSE stream (single doc) in named db |
-| GET | `/db/:db/collections` | List collections in named db |
+| GET | `/db/:db/collections` | List collections the caller can read in named db |
 | GET | `/db/:db/collections/:col/permissions` | Get permission level in named db (admin) |
 | PUT | `/db/:db/collections/:col/permissions` | Set permission level in named db (admin) |
 
@@ -830,7 +832,7 @@ Built-in request analytics — every API call is aggregated into per-minute buck
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | `{ status: "ok" }` |
-| GET | `/collections` | List collection names (default db) |
+| GET | `/collections` | List collection names the caller can read (default db) |
 | GET | `/collections/:col/permissions` | Get permission level (legacy compat, admin) |
 | PUT | `/collections/:col/permissions` | Set permission level (legacy compat, admin) |
 
@@ -841,7 +843,7 @@ Built-in request analytics — every API call is aggregated into per-minute buck
 | `where` | `[["status","==","active"]]` | JSON array of `[field, op, value]` |
 | `orderBy` | `created` | Field to sort by |
 | `order` | `desc` | `asc` or `desc` |
-| `limit` | `20` | Max docs |
+| `limit` | `20` | Max docs. Non-admin defaults to 100, capped at 10000. Admin unlimited unless set. |
 
 ## Upgrading ezbase
 

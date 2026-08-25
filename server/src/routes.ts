@@ -5,7 +5,7 @@ import { keepAlive } from './sse.js'
 import { sql, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
 import { generateId } from './id.js'
 import { publishChange, subscribe } from './pubsub.js'
-import { requirePermission } from './middleware.js'
+import { canReadCollection, requirePermission } from './middleware.js'
 import type { AppliedFilter } from './rules.js'
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -128,6 +128,31 @@ function docMatchesFilters(data: Record<string, unknown>, filters: AppliedFilter
   return true
 }
 
+const MAX_JSON_BYTES = parseInt(process.env.EZBASE_MAX_JSON_BYTES || String(1024 * 1024), 10)
+const DEFAULT_LIMIT = parseInt(process.env.EZBASE_DEFAULT_LIMIT || '100', 10)
+const MAX_LIMIT = parseInt(process.env.EZBASE_MAX_LIMIT || '10000', 10)
+
+async function readJsonBody(c: Context): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
+  const declared = parseInt(c.req.header('content-length') || '0', 10)
+  if (declared > MAX_JSON_BYTES) {
+    return { ok: false, response: c.json({ error: 'Payload too large' }, 413) }
+  }
+  const body = await c.req.json() as Record<string, unknown>
+  if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_JSON_BYTES) {
+    return { ok: false, response: c.json({ error: 'Payload too large' }, 413) }
+  }
+  return { ok: true, body }
+}
+
+function resolveLimit(limitParam: string | undefined, isAdmin: boolean): number | undefined {
+  if (limitParam) {
+    const n = parseInt(limitParam, 10)
+    if (!(n > 0)) return isAdmin ? undefined : DEFAULT_LIMIT
+    return isAdmin ? n : Math.min(n, MAX_LIMIT)
+  }
+  return isAdmin ? undefined : DEFAULT_LIMIT
+}
+
 function buildQuery(
   database: string,
   collection: string,
@@ -137,7 +162,8 @@ function buildQuery(
   limitParam?: string,
   docFilters?: AppliedFilter[],
   offsetParam?: string,
-  fields?: string[]
+  fields?: string[],
+  isAdmin = false
 ) {
   let query = `SELECT ${selectClause(fields)} FROM db_${database}.col_${collection} WHERE true`
   const params: unknown[] = []
@@ -215,18 +241,17 @@ function buildQuery(
     if (colName) {
       query += ` ORDER BY ${colName} ${dir}`
     } else {
-      query += ` ORDER BY data->>'${sanitizeField(orderBy)}' ${dir}`
+      // jsonb comparison keeps numbers numeric (data->>'x' is lexical text)
+      query += ` ORDER BY data->'${sanitizeField(orderBy)}' ${dir}`
     }
   } else {
     query += ' ORDER BY created_at DESC'
   }
 
-  if (limitParam) {
-    const n = parseInt(limitParam, 10)
-    if (n > 0) {
-      params.push(n)
-      query += ` LIMIT $${params.length}`
-    }
+  const limit = resolveLimit(limitParam, isAdmin)
+  if (limit !== undefined) {
+    params.push(limit)
+    query += ` LIMIT $${params.length}`
   }
 
   if (offsetParam) {
@@ -324,7 +349,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
           limitParam,
           docFilters,
           offsetParam,
-          fields
+          fields,
+          (c.get('role') || 'anonymous') === 'admin'
         )
         const rows = await sql.unsafe(query, params as any[])
         await stream.writeSSE({
@@ -373,12 +399,14 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
   app.get('/collections', async (c) => {
     const database = getDatabase(c)
     const schema = `db_${database}`
+    const role = c.get('role') || 'anonymous'
     const rows = await sql`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = ${schema} AND table_name LIKE 'col_%'
       ORDER BY table_name
     `
-    return c.json(rows.map((r) => (r.table_name as string).slice(4)))
+    const names = rows.map((r) => (r.table_name as string).slice(4))
+    return c.json(names.filter((name) => canReadCollection(role, name)))
   })
 
   // ── CRUD ──────────────────────────────────────────────────────
@@ -388,7 +416,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
 
-    const body = await c.req.json()
+    const parsed = await readJsonBody(c)
+    if (!parsed.ok) return parsed.response
+    const body = parsed.body
 
     const createFilters = c.get('docFilters') as AppliedFilter[] | undefined
     if (createFilters) {
@@ -428,7 +458,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         c.req.query('limit'),
         docFilters,
         c.req.query('offset'),
-        parseFields(c.req.query('fields'))
+        parseFields(c.req.query('fields')),
+        (c.get('role') || 'anonymous') === 'admin'
       ))
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
@@ -482,7 +513,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       }
     }
 
-    const body = await c.req.json()
+    const parsed = await readJsonBody(c)
+    if (!parsed.ok) return parsed.response
+    const body = parsed.body
 
     // Replacement data must also stay inside the caller's filter scope
     if (putFilters) {
@@ -524,7 +557,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       }
     }
 
-    const body = await c.req.json()
+    const parsed = await readJsonBody(c)
+    if (!parsed.ok) return parsed.response
+    const body = parsed.body
 
     // A patch may not move the doc out of the caller's filter scope
     if (patchFilters) {
@@ -611,6 +646,11 @@ adminRoutes.get('/health', (c) => c.json({ status: 'ok', version: process.env.EZ
 
 // List databases
 adminRoutes.get('/databases', async (c) => {
+  const role = c.get('role') || 'anonymous'
+  if (role !== 'admin') {
+    return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
+  }
+
   const rows = await sql`
     SELECT schema_name FROM information_schema.schemata
     WHERE schema_name LIKE 'db_%'

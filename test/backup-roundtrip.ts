@@ -112,7 +112,6 @@ async function main() {
   assert(Object.keys(before).length === dogs.length + EVENTS, `seeded ${dogs.length + EVENTS} docs across 2 collections`)
 
   // Capture query results now — after restore, the same queries must return the same thing.
-  // (Note: orderBy on JSON fields is lexicographic in ezbase — we assert equivalence, not order semantics.)
   // Docs sharing a created_at ms have arbitrary tie order, so compare where() as a set.
   const byId = (docs: { id: string }[]) => [...docs].sort((a, b) => (a.id < b.id ? -1 : 1))
   const queriesBefore = {

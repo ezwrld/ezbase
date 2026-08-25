@@ -219,13 +219,17 @@ storageRoutes.get('/storage/:bucket/:path{.+}', requireStorageAccess('read'), as
   const bunFile = Bun.file(diskPath)
   if (!await bunFile.exists()) return c.json({ error: 'File not found' }, 404)
 
-  const rows = await sql`SELECT mime_type, size FROM _ezbase_files WHERE path = ${fullPath}`
+  const rows = await sql`SELECT mime_type, size, filename FROM _ezbase_files WHERE path = ${fullPath}`
   const mimeType = rows.length > 0 ? rows[0].mime_type : 'application/octet-stream'
   const size = rows.length > 0 ? rows[0].size : bunFile.size
+  const filename = rows.length > 0 ? String(rows[0].filename) : pathParam.split('/').pop() || 'download'
+  const safeName = filename.replace(/[\r\n"]/g, '_')
 
   c.header('Content-Type', mimeType as string)
   c.header('Content-Length', String(size))
   c.header('Cache-Control', 'private, max-age=3600')
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Content-Disposition', `attachment; filename="${safeName}"`)
 
   return c.body(bunFile.stream())
 })
@@ -256,7 +260,7 @@ storageRoutes.delete('/storage/:bucket/:path{.+}', requireStorageAccess('delete'
   return c.json({ success: true })
 })
 
-// HEAD is handled automatically by Hono — GET handler sets Content-Type/Content-Length,
-// and Hono strips the body for HEAD requests.
+// HEAD is handled automatically by Hono — GET handler sets Content-Type/Content-Length/
+// Content-Disposition/nosniff, and Hono strips the body for HEAD requests.
 
 export { storageRoutes }
