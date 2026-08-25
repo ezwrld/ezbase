@@ -129,7 +129,7 @@ class AuthClient {
   async signUp(opts: { email: string; password: string }): Promise<{ token: string; user: AuthUser }> {
     const res = await fetch(`${this.ez['url']}/api/auth/sign-up/email`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.ez['_authHeaders']() },
+      headers: { 'Content-Type': 'application/json', ...this.ez['_originHeaders'](), ...this.ez['_authHeaders']() },
       body: JSON.stringify({ email: opts.email, password: opts.password, name: opts.email }),
     })
     if (!res.ok) {
@@ -152,7 +152,7 @@ class AuthClient {
   async signIn(opts: { email: string; password: string }): Promise<{ token: string; user: AuthUser }> {
     const res = await fetch(`${this.ez['url']}/api/auth/sign-in/email`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.ez['_authHeaders']() },
+      headers: { 'Content-Type': 'application/json', ...this.ez['_originHeaders'](), ...this.ez['_authHeaders']() },
       body: JSON.stringify({ email: opts.email, password: opts.password }),
     })
     if (!res.ok) {
@@ -177,7 +177,7 @@ class AuthClient {
     if (this._token) {
       fetch(`${this.ez['url']}/api/auth/sign-out`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this.ez['_authHeaders']() },
+        headers: { 'Content-Type': 'application/json', ...this.ez['_originHeaders'](), ...this.ez['_authHeaders']() },
       }).catch(() => {})
     }
     this._token = null
@@ -201,7 +201,7 @@ class AuthClient {
     if (opts?.errorCallbackURL) params.set('errorCallbackURL', opts.errorCallbackURL)
     const url = `${this.ez['url']}/api/auth/sign-in/social?${params}`
 
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, callbackURL: opts?.callbackURL || '/', ...(opts?.newUserCallbackURL && { newUserCallbackURL: opts.newUserCallbackURL }), ...(opts?.errorCallbackURL && { errorCallbackURL: opts.errorCallbackURL }) }), redirect: 'manual' })
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...this.ez['_originHeaders']() }, body: JSON.stringify({ provider, callbackURL: opts?.callbackURL || '/', ...(opts?.newUserCallbackURL && { newUserCallbackURL: opts.newUserCallbackURL }), ...(opts?.errorCallbackURL && { errorCallbackURL: opts.errorCallbackURL }) }), redirect: 'manual' })
     const location = res.headers.get('location')
     if (location) {
       if (typeof window !== 'undefined') {
@@ -262,7 +262,7 @@ class AuthClient {
   async requestPasswordReset(email: string, redirectTo?: string): Promise<void> {
     const res = await fetch(`${this.ez['url']}/api/auth/request-password-reset`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.ez['_originHeaders']() },
       body: JSON.stringify({ email, ...(redirectTo ? { redirectTo } : {}) }),
     })
     if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
@@ -272,7 +272,7 @@ class AuthClient {
   async resetPassword(newPassword: string, token: string): Promise<void> {
     const res = await fetch(`${this.ez['url']}/api/auth/reset-password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.ez['_originHeaders']() },
       body: JSON.stringify({ newPassword, token }),
     })
     if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
@@ -282,7 +282,7 @@ class AuthClient {
   async changePassword(currentPassword: string, newPassword: string, opts?: { revokeOtherSessions?: boolean }): Promise<void> {
     const res = await fetch(`${this.ez['url']}/api/auth/change-password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      headers: { 'Content-Type': 'application/json', ...this.ez['_originHeaders'](), ...this.ez._authHeaders() },
       body: JSON.stringify({
         currentPassword,
         newPassword,
@@ -508,6 +508,15 @@ class EzBase {
     const token = this.adminKey || this.auth._getToken()
     if (token) return { Authorization: `Bearer ${token}` }
     return {}
+  }
+
+  /** @internal — BetterAuth CSRF requires Origin on auth POSTs; browsers send it, Node does not. */
+  _originHeaders(): Record<string, string> {
+    try {
+      return { Origin: new URL(this.url).origin }
+    } catch {
+      return {}
+    }
   }
 
 }

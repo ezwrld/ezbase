@@ -126,6 +126,10 @@ async function testQueries() {
     .get()
   assert(chained.length === 2 && chained[0]?.data?.score === 50, 'chained query works')
 
+  await admin.collection('qa_query').add({ name: 'big', score: 199 })
+  const numericDesc = await admin.collection('qa_query').orderBy('score', 'desc').limit(1).get()
+  assert(numericDesc[0]?.data?.score === 199, 'orderBy(score, desc) sorts numbers, not strings')
+
   // Compound where
   const compound = await admin.collection('qa_query')
     .where('score', '>=', 20)
@@ -422,6 +426,8 @@ async function testStorage() {
   const downloadRes = await apiFetch(`/storage/${meta.path}`)
   const text = await downloadRes.text()
   assert(text === 'hello world', 'download returns file content')
+  assert((downloadRes.headers.get('X-Content-Type-Options') || '').includes('nosniff'), 'download sets nosniff')
+  assert((downloadRes.headers.get('Content-Disposition') || '').toLowerCase().includes('attachment'), 'download forces attachment')
 
   // HEAD
   const headRes = await fetch(`${URL}/api/storage/${meta.path}`, {
@@ -705,6 +711,15 @@ async function testPermissionLevels() {
 
   const anonAdmin = await fetch(`${URL}/api/collections/qa_admin`)
   assert(anonAdmin.status === 401, 'anonymous gets 401 on admin collection')
+
+  const listed = await fetch(`${URL}/api/collections`)
+  const listedNames = await listed.json()
+  assert(Array.isArray(listedNames) && listedNames.includes('qa_public'), 'anonymous list includes public collections')
+  assert(!listedNames.includes('qa_admin'), 'anonymous list hides admin collections')
+  assert(!listedNames.includes('qa_auth'), 'anonymous list hides authenticated collections')
+
+  const dbs = await fetch(`${URL}/api/databases`)
+  assert(dbs.status === 401, 'anonymous cannot list databases')
 
   // Authenticated user
   const client = new EzBase({ url: URL })

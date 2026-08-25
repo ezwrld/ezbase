@@ -13,6 +13,29 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.6 — 2026-08-25
+
+### Fixed
+- **Collection listing is permission-aware.** `GET /api/collections` (and the named-db equivalent) only returns collections the caller can read. Admin-only collections no longer leak their names to anonymous clients.
+- **`GET /api/databases` is admin-only.**
+- **File downloads cannot execute in the ezbase origin.** Downloads send `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`.
+- **`orderBy` on JSON numbers is numeric.** Previously `data->>'field'` sorted as text (`99` before `199`). Sorts now use jsonb comparison so numbers compare as numbers.
+- **SDK auth from Node/Bun.** `@ezwrld/ezbase` sends `Origin` on auth POSTs. BetterAuth CSRF was rejecting sign-up/sign-in without it (`MISSING_OR_NULL_ORIGIN`). Browsers already send Origin; this is the same SDK with `adminKey` for servers — there is no separate server package.
+
+### Added
+- Non-admin list/query/SSE requests default to `limit=100` and are capped at `10000` (`EZBASE_DEFAULT_LIMIT` / `EZBASE_MAX_LIMIT`). Admin-key requests stay unlimited unless `limit` is set.
+- Document JSON bodies are capped at 1 MB (`EZBASE_MAX_JSON_BYTES`). Backup restore is unchanged.
+- Fresh Postgres clusters initialize as UTF-8 (`C.UTF-8`). Existing volumes are not rewritten.
+
+SDK `@ezwrld/ezbase@1.4.0`.
+
+### Upgrade considerations
+- Anonymous `GET /api/collections` no longer returns every table name — only collections whose **read** rule allows the caller. Aura-style `{ "default": "admin" }` instances will return `[]` without the admin key. `listCollections()` with `adminKey` is unchanged.
+- `GET /api/databases` returns 401/403 without the admin key. The console already sends it.
+- Non-admin clients that listed an entire collection with no `limit` now receive at most 100 docs. Pass `limit` (max 10000) or use the admin key.
+- Image downloads still work in `<img src>` in Chromium; navigating to a stored HTML file downloads instead of executing.
+- Existing Postgres volumes keep their current encoding. Only new `initdb` runs are UTF-8.
+
 ## v1.5 — 2026-08-22
 
 ### Added
