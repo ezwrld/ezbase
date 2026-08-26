@@ -13,7 +13,8 @@ export default defineConfig({
   server: {
     host: true,
     hmr: {
-      clientPort: 7003,
+      // Omit clientPort so the WS uses the page's port (7003, 7021, …).
+      // Hardcoding 7003 made any other published port reload against the wrong stack.
       path: '/__hmr',
     },
   },

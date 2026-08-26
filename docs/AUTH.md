@@ -1,6 +1,6 @@
 # Auth — BetterAuth Integration
 
-**Status:** Implemented. Email/password + OAuth providers (Google, GitHub, Microsoft, Apple), password reset/change (SMTP via `SMTP_*` env vars; links log to server console without SMTP), admin set-password, optional email verification (`EZBASE_REQUIRE_EMAIL_VERIFICATION`), brute-force rate limiting (always on — 3 attempts/10s per IP on sensitive endpoints; `EZBASE_RATE_LIMIT=false` only for test stacks; nginx overwrites `X-Forwarded-For` so the per-IP buckets can't be spoofed), cross-domain browser auth via `EZBASE_TRUSTED_ORIGINS`.
+**Status:** Implemented. Email/password + OAuth (Google, GitHub, Microsoft, Apple) via Console → Auth. Password reset/change (SMTP optional), admin set-password, optional email verification, brute-force rate limiting always on.
 
 ## Why BetterAuth
 
@@ -112,7 +112,9 @@ ez.auth.onAuthStateChanged((user) => { ... })
 - User signs up with email → later signs in with Google (same email) → same user, two auth methods
 - Configured via `account.accountLinking` in BetterAuth options
 
-## Docker env vars
+## Setup
+
+Open **Console → Auth** (or keep using env vars below). Email/password works with zero config.
 
 ```yaml
 ezbase:
@@ -122,20 +124,10 @@ ezbase:
   volumes:
     - ezbase-data:/data
   environment:
-    EZBASE_URL: "https://myapp.com"    # required for OAuth (callback URLs)
-    GOOGLE_CLIENT_ID: "..."
-    GOOGLE_CLIENT_SECRET: "..."
-    GITHUB_CLIENT_ID: "..."
-    GITHUB_CLIENT_SECRET: "..."
-    MICROSOFT_CLIENT_ID: "..."
-    MICROSOFT_CLIENT_SECRET: "..."
-    APPLE_CLIENT_ID: "..."
-    APPLE_CLIENT_SECRET: "..."
+    ADMIN_KEY: "your-secret-admin-key"
+    # Optional. Console → Auth is the same thing, stored in /data/auth.json
+    EZBASE_URL: "https://myapp.com/ez"
 ```
-
-No env vars = email/password only. Add provider credentials = OAuth just works. Zero code changes.
-
-OAuth callback URL to register with each provider: `{EZBASE_URL}/api/auth/callback/{provider}`
 
 ## Custom Claims & Roles
 
@@ -147,8 +139,8 @@ All require admin key or `role: "admin"`. Registered in `server/src/auth.ts` bef
 
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
-| GET | `/auth/users` | — | List users (`?limit=&offset=`) |
-| GET | `/auth/users/:id` | — | Get user by ID |
+| GET | `/auth/users` | — | List users (`?limit=&offset=`). Each row includes `providers` and `lastLogin`. |
+| GET | `/auth/users/:id` | — | Get user by ID (same shape) |
 | PUT | `/auth/users/:id/role` | `{ role: "mover" }` | Set role |
 | PUT | `/auth/users/:id/claims` | `{ orgId: "123" }` | Replace claims |
 | PATCH | `/auth/users/:id/claims` | `{ tier: "pro" }` | Merge claims (null deletes key) |

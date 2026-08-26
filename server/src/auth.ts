@@ -4,9 +4,19 @@ import { bearer } from 'better-auth/plugins'
 import { getMigrations } from 'better-auth/db/migration'
 import pg from 'pg'
 import { sql } from './db.js'
-import { getAuthSecret, getPublicUrl } from './config.js'
+import { getAuthSecret } from './config.js'
 import { generateId } from './id.js'
 import { sendMail, isMailConfigured } from './mail.js'
+import {
+  applyPut,
+  getEffectiveAuth,
+  isAuthSettingsReadonly,
+  toView,
+  writeAuthFile,
+  type AuthSettingsPut,
+  type EffectiveAuth,
+  type ProviderId,
+} from './auth-settings.js'
 
 // pg.Pool is only here because BetterAuth requires it.
 // All other queries use the postgres.js `sql` instance from db.ts.
@@ -14,45 +24,6 @@ const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://ezbase:ezbase@localhost:5432/ezbase',
 })
 
-const socialProviders: Record<string, { clientId: string; clientSecret: string }> = {}
-
-if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-  socialProviders.google = {
-    clientId: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  }
-}
-if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
-  socialProviders.github = {
-    clientId: process.env.GITHUB_CLIENT_ID,
-    clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  }
-}
-if (process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET) {
-  socialProviders.microsoft = {
-    clientId: process.env.MICROSOFT_CLIENT_ID,
-    clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
-  }
-}
-if (process.env.APPLE_CLIENT_ID && process.env.APPLE_CLIENT_SECRET) {
-  socialProviders.apple = {
-    clientId: process.env.APPLE_CLIENT_ID,
-    clientSecret: process.env.APPLE_CLIENT_SECRET,
-  }
-}
-
-const { origin: publicOrigin, basePath: publicBasePath } = getPublicUrl()
-
-// Extra origins allowed to make browser auth requests (frontends on other
-// domains than EZBASE_URL). Comma-separated, e.g. "https://app.example.com,https://admin.example.com"
-const trustedOrigins = [
-  publicOrigin,
-  ...(process.env.EZBASE_TRUSTED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
-]
-
-// Brute-force protection — always on (3 attempts/10s per IP on sign-in/sign-up/
-// change-password, per BetterAuth defaults). EZBASE_RATE_LIMIT=false is the one
-// escape hatch, for test stacks that hammer auth endpoints from a single IP.
 const rateLimitEnabled = process.env.EZBASE_RATE_LIMIT !== 'false'
 
 const requireEmailVerification = process.env.EZBASE_REQUIRE_EMAIL_VERIFICATION === 'true'
@@ -69,61 +40,84 @@ async function deliverAuthEmail(kind: string, to: string, subject: string, url: 
       console.error(`ezbase: failed to send ${kind} email to ${to}:`, err)
     }
   }
-  // No SMTP (or send failed) — surface the link in server logs so self-hosters
-  // can still complete the flow: `ez logs server | grep <kind>`
   console.log(`ezbase: ${kind} link for ${to}: ${url}`)
 }
 
-const authOptions = {
-  baseURL: publicOrigin,
-  basePath: `${publicBasePath}/api/auth`,
-  database: pool,
-  secret: getAuthSecret(),
-  trustedOrigins,
-  rateLimit: { enabled: rateLimitEnabled },
-  emailAndPassword: {
-    enabled: true,
-    minPasswordLength: 8,
-    requireEmailVerification,
-    sendResetPassword: async ({ user, url }: { user: { email: string }; url: string }) => {
-      await deliverAuthEmail('password-reset', user.email, 'Reset your password', url)
-    },
-  },
-  emailVerification: {
-    sendOnSignUp: requireEmailVerification,
-    sendVerificationEmail: async ({ user, url }: { user: { email: string }; url: string }) => {
-      await deliverAuthEmail('email-verification', user.email, 'Verify your email', url)
-    },
-  },
-  session: { expiresIn: 7 * 24 * 60 * 60 },
-  plugins: [bearer()],
-  socialProviders,
-  account: {
-    accountLinking: {
-      enabled: true,
-      trustedProviders: ['google', 'github', 'apple', 'microsoft'],
-    },
-  },
-  user: {
-    additionalFields: {
-      role: {
-        type: "string" as const,
-        defaultValue: "user",
-        input: false,
-      },
-      claims: {
-        type: "string" as const,
-        defaultValue: "{}",
-        input: false,
-      },
-    },
-  },
+function parsePublicUrl(raw: string): { origin: string; basePath: string } {
+  const parsed = new URL(raw)
+  const basePath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '')
+  return { origin: parsed.origin, basePath }
 }
 
-export const ba = betterAuth(authOptions)
+function socialFrom(cfg: EffectiveAuth): Record<string, { clientId: string; clientSecret: string }> {
+  const out: Record<string, { clientId: string; clientSecret: string }> = {}
+  for (const [id, p] of Object.entries(cfg.providers) as [ProviderId, EffectiveAuth['providers'][ProviderId]][]) {
+    if (p.enabled && p.clientId && p.clientSecret) {
+      out[id] = { clientId: p.clientId, clientSecret: p.clientSecret }
+    }
+  }
+  return out
+}
+
+function buildAuthOptions(cfg: EffectiveAuth) {
+  const { origin, basePath } = parsePublicUrl(cfg.publicUrl)
+  return {
+    baseURL: origin,
+    basePath: `${basePath}/api/auth`,
+    database: pool,
+    secret: getAuthSecret(),
+    trustedOrigins: cfg.trustedOrigins,
+    rateLimit: { enabled: rateLimitEnabled },
+    emailAndPassword: {
+      enabled: true,
+      minPasswordLength: 8,
+      requireEmailVerification,
+      sendResetPassword: async ({ user, url }: { user: { email: string }; url: string }) => {
+        await deliverAuthEmail('password-reset', user.email, 'Reset your password', url)
+      },
+    },
+    emailVerification: {
+      sendOnSignUp: requireEmailVerification,
+      sendVerificationEmail: async ({ user, url }: { user: { email: string }; url: string }) => {
+        await deliverAuthEmail('email-verification', user.email, 'Verify your email', url)
+      },
+    },
+    session: { expiresIn: 7 * 24 * 60 * 60 },
+    plugins: [bearer()],
+    socialProviders: socialFrom(cfg),
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ['google', 'github', 'apple', 'microsoft'],
+      },
+    },
+    user: {
+      additionalFields: {
+        role: {
+          type: 'string' as const,
+          defaultValue: 'user',
+          input: false,
+        },
+        claims: {
+          type: 'string' as const,
+          defaultValue: '{}',
+          input: false,
+        },
+      },
+    },
+  }
+}
+
+export let ba = betterAuth(buildAuthOptions(getEffectiveAuth()))
+
+export function rebuildAuth() {
+  ba = betterAuth(buildAuthOptions(getEffectiveAuth()))
+  const enabled = Object.keys(socialFrom(getEffectiveAuth()))
+  console.log(`ezbase: auth reloaded (providers: ${enabled.length ? enabled.join(', ') : 'email-only'})`)
+}
 
 export async function initAuth() {
-  const { runMigrations } = await getMigrations(authOptions)
+  const { runMigrations } = await getMigrations(buildAuthOptions(getEffectiveAuth()))
   await runMigrations()
 }
 
@@ -142,7 +136,6 @@ auth.get('/me', async (c) => {
     return c.json({ error: 'Not authenticated' }, 401)
   }
 
-  // Look up user from BetterAuth's session context
   const session = await getSessionFromRequest(c.req.raw)
   if (!session) {
     return c.json({ error: 'Not authenticated' }, 401)
@@ -161,8 +154,48 @@ auth.get('/me', async (c) => {
 
 // ── GET /providers — list enabled OAuth providers ──────────
 auth.get('/providers', (c) => {
-  const providers = Object.keys(socialProviders)
+  const providers = Object.keys(socialFrom(getEffectiveAuth()))
   return c.json({ providers, emailPassword: true })
+})
+
+// ── GET /settings — console auth page (admin) ──────────────
+auth.get('/settings', (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  return c.json(toView(getEffectiveAuth()))
+})
+
+// ── PUT /settings — save providers / public URL (admin) ────
+auth.put('/settings', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+  if (isAuthSettingsReadonly()) {
+    return c.json({ error: 'auth.json is read-only' }, 409)
+  }
+
+  let body: AuthSettingsPut
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400)
+  }
+
+  if (body.publicUrl) {
+    try {
+      new URL(body.publicUrl)
+    } catch {
+      return c.json({ error: 'publicUrl must be a valid URL (include https:// and /ez if you mount there)' }, 400)
+    }
+  }
+
+  try {
+    const next = applyPut(body)
+    writeAuthFile(next)
+    rebuildAuth()
+    return c.json(toView(getEffectiveAuth()))
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Failed to save' }, 400)
+  }
 })
 
 // ── Helper: require admin role ──────────────────────────────
@@ -177,6 +210,24 @@ function parseClaims(raw: string | null | undefined): Record<string, unknown> {
   try { return JSON.parse(raw || '{}') } catch { return {} }
 }
 
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean)
+  if (typeof value === 'string') {
+    return value.replace(/^{|}$/g, '').split(',').map((s) => s.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function ms(value: unknown): number | null {
+  if (value == null) return null
+  const n = value instanceof Date ? value.getTime() : new Date(value as string).getTime()
+  return Number.isNaN(n) ? null : n
+}
+
+function mapProviderId(id: string): string {
+  return id === 'credential' ? 'password' : id
+}
+
 function formatUser(row: Record<string, unknown>) {
   return {
     id: row.id,
@@ -185,9 +236,48 @@ function formatUser(row: Record<string, unknown>) {
     image: row.image || null,
     role: row.role || 'user',
     claims: parseClaims(row.claims as string),
-    created: row.createdAt ? new Date(row.createdAt as string).getTime() : null,
-    updated: row.updatedAt ? new Date(row.updatedAt as string).getTime() : null,
+    providers: asStringArray(row.providers).map(mapProviderId),
+    created: ms(row.createdAt),
+    lastLogin: ms(row.lastLogin),
+    updated: ms(row.updatedAt),
   }
+}
+
+function usersFrom(rows: Record<string, unknown>[]) {
+  return rows.map(formatUser)
+}
+
+async function selectUsers(id?: string, limit = 1, offset = 0) {
+  if (id) {
+    return sql`
+      SELECT
+        u.id, u.email, u.name, u.image, u.role, u.claims, u."createdAt", u."updatedAt",
+        COALESCE(
+          (SELECT array_agg(DISTINCT a."providerId") FROM public."account" a WHERE a."userId" = u.id),
+          '{}'::text[]
+        ) AS providers,
+        (SELECT MAX(s."createdAt") FROM public."session" s WHERE s."userId" = u.id) AS "lastLogin"
+      FROM public."user" u
+      WHERE u.id = ${id}
+    `
+  }
+  return sql`
+    SELECT
+      u.id, u.email, u.name, u.image, u.role, u.claims, u."createdAt", u."updatedAt",
+      COALESCE(
+        (SELECT array_agg(DISTINCT a."providerId") FROM public."account" a WHERE a."userId" = u.id),
+        '{}'::text[]
+      ) AS providers,
+      (SELECT MAX(s."createdAt") FROM public."session" s WHERE s."userId" = u.id) AS "lastLogin"
+    FROM public."user" u
+    ORDER BY u."createdAt" DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `
+}
+
+async function fetchFormattedUser(id: string) {
+  const rows = await selectUsers(id)
+  return rows.length === 0 ? null : formatUser(rows[0])
 }
 
 // ── GET /users — list users (admin only) ────────────────────
@@ -198,8 +288,8 @@ auth.get('/users', async (c) => {
   const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 1000)
   const offset = parseInt(c.req.query('offset') || '0', 10)
 
-  const rows = await sql`SELECT * FROM public."user" ORDER BY "createdAt" DESC LIMIT ${limit} OFFSET ${offset}`
-  return c.json(rows.map(formatUser))
+  const rows = await selectUsers(undefined, limit, offset)
+  return c.json(usersFrom(rows))
 })
 
 // ── GET /users/:id — get user (admin only) ──────────────────
@@ -207,10 +297,9 @@ auth.get('/users/:id', async (c) => {
   const denied = requireAdmin(c)
   if (denied) return denied
 
-  const id = c.req.param('id')
-  const rows = await sql`SELECT * FROM public."user" WHERE id = ${id}`
-  if (rows.length === 0) return c.json({ error: 'User not found' }, 404)
-  return c.json(formatUser(rows[0]))
+  const user = await fetchFormattedUser(c.req.param('id'))
+  if (!user) return c.json({ error: 'User not found' }, 404)
+  return c.json(user)
 })
 
 // ── PUT /users/:id/role — set role (admin only) ─────────────
@@ -224,9 +313,9 @@ auth.put('/users/:id/role', async (c) => {
     return c.json({ error: 'role is required and must be a string' }, 400)
   }
 
-  const rows = await sql`UPDATE public."user" SET role = ${role} WHERE id = ${id} RETURNING *`
+  const rows = await sql`UPDATE public."user" SET role = ${role} WHERE id = ${id} RETURNING id`
   if (rows.length === 0) return c.json({ error: 'User not found' }, 404)
-  return c.json(formatUser(rows[0]))
+  return c.json(await fetchFormattedUser(id))
 })
 
 // ── PUT /users/:id/claims — replace claims (admin only) ─────
@@ -240,9 +329,9 @@ auth.put('/users/:id/claims', async (c) => {
     return c.json({ error: 'Body must be a JSON object' }, 400)
   }
 
-  const rows = await sql`UPDATE public."user" SET claims = ${JSON.stringify(claims)} WHERE id = ${id} RETURNING *`
+  const rows = await sql`UPDATE public."user" SET claims = ${JSON.stringify(claims)} WHERE id = ${id} RETURNING id`
   if (rows.length === 0) return c.json({ error: 'User not found' }, 404)
-  return c.json(formatUser(rows[0]))
+  return c.json(await fetchFormattedUser(id))
 })
 
 // ── PATCH /users/:id/claims — merge claims (admin only) ─────
@@ -256,12 +345,10 @@ auth.patch('/users/:id/claims', async (c) => {
     return c.json({ error: 'Body must be a JSON object' }, 400)
   }
 
-  // Fetch current claims
   const current = await sql`SELECT claims FROM public."user" WHERE id = ${id}`
   if (current.length === 0) return c.json({ error: 'User not found' }, 404)
 
   const existing = parseClaims(current[0].claims as string)
-  // Merge: null values delete keys
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) {
       delete existing[k]
@@ -270,13 +357,11 @@ auth.patch('/users/:id/claims', async (c) => {
     }
   }
 
-  const rows = await sql`UPDATE public."user" SET claims = ${JSON.stringify(existing)} WHERE id = ${id} RETURNING *`
-  return c.json(formatUser(rows[0]))
+  await sql`UPDATE public."user" SET claims = ${JSON.stringify(existing)} WHERE id = ${id}`
+  return c.json(await fetchFormattedUser(id))
 })
 
 // ── PUT /users/:id/password — set password (admin only) ─────
-// Ops escape hatch: works without SMTP, also grants email/password
-// sign-in to users who only ever signed up via OAuth.
 auth.put('/users/:id/password', async (c) => {
   const denied = requireAdmin(c)
   if (denied) return denied
@@ -305,7 +390,6 @@ auth.put('/users/:id/password', async (c) => {
     `
   }
 
-  // Password changed out-of-band — revoke every existing session
   await sql`DELETE FROM public."session" WHERE "userId" = ${id}`
 
   return c.json({ success: true })
@@ -318,17 +402,14 @@ auth.delete('/users/:id', async (c) => {
 
   const id = c.req.param('id')
 
-  // Self-deletion guard
   const callerUserId = c.get('userId')
   if (callerUserId && callerUserId === id) {
     return c.json({ error: 'Cannot delete your own account' }, 400)
   }
 
-  // Check user exists
   const userRows = await sql`SELECT id FROM public."user" WHERE id = ${id}`
   if (userRows.length === 0) return c.json({ error: 'User not found' }, 404)
 
-  // Delete sessions, accounts, then user
   await sql`DELETE FROM public."session" WHERE "userId" = ${id}`
   await sql`DELETE FROM public."account" WHERE "userId" = ${id}`
   await sql`DELETE FROM public."user" WHERE id = ${id}`

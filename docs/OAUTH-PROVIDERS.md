@@ -1,22 +1,14 @@
 # OAuth Provider Setup
 
-How to acquire client credentials for each supported provider and wire them into ezbase.
+**Usual path:** Console → **Auth**. Set the public URL of *this ezbase* (Aura: `https://aura.tl/ez`). Toggle a provider, paste client ID + secret, copy the callback it shows into the provider's console. No restart.
 
-Every provider follows the same shape:
+Callback is always `{public URL}/api/auth/callback/{provider}` — e.g. `https://aura.tl/ez/api/auth/callback/google`.
 
-1. Create an OAuth app in the provider's developer console
-2. Register the **callback URL**: `{EZBASE_URL}/api/auth/callback/{provider}`
-   (e.g. `https://myapp.com/api/auth/callback/google` — or `http://localhost:7003/api/auth/callback/google` for local dev)
-3. Copy the client ID + secret into your ezbase env vars
-4. Restart the container — the provider appears in `GET /api/auth/providers` and `ez.auth.signInWithProvider(...)` works
-
-`EZBASE_URL` must be set to your public URL — it's both the trusted browser origin and the base for callback URLs.
-
----
+How to get credentials:
 
 ## Google
 
-Env: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+Paste the client ID and secret in Console → Auth.
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) → create (or pick) a project
 2. **APIs & Services → OAuth consent screen**: configure it (External audience for public apps). App name + support email is enough to start; you can stay in "Testing" mode with listed test users until you publish.
@@ -29,8 +21,6 @@ Localhost callback URLs are allowed, so this works in dev.
 
 ## GitHub
 
-Env: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`
-
 1. GitHub → **Settings → Developer settings → OAuth Apps → New OAuth App**
    (org-owned apps: same path under the org's settings)
 2. Homepage URL: your app. **Authorization callback URL**: `{EZBASE_URL}/api/auth/callback/github`
@@ -41,8 +31,6 @@ Simplest of the four — two minutes, localhost fine.
 
 ## Microsoft
 
-Env: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`
-
 1. [entra.microsoft.com](https://entra.microsoft.com) → **App registrations → New registration**
 2. Supported account types: "Accounts in any organizational directory and personal Microsoft accounts" for a general-public app
 3. Redirect URI: platform **Web**, value `{EZBASE_URL}/api/auth/callback/microsoft`
@@ -52,8 +40,6 @@ Env: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`
 Note: client secrets expire (max 24 months) — calendar a rotation.
 
 ## Apple
-
-Env: `APPLE_CLIENT_ID`, `APPLE_CLIENT_SECRET`
 
 Apple is the involved one — requires a paid Apple Developer account, HTTPS-only callbacks (no localhost), and the "client secret" is a **JWT you generate yourself**, not a value Apple hands you.
 
@@ -88,6 +74,6 @@ const session = await ez.auth.getSession()
 Accounts with the same verified email auto-link across providers (email/password + Google = one user).
 
 **Troubleshooting**
-- `redirect_uri_mismatch` — the callback URL registered with the provider doesn't exactly match `{EZBASE_URL}/api/auth/callback/{provider}`. Check protocol, host, port, and that `EZBASE_URL` is set.
-- Provider missing from `/api/auth/providers` — both env vars must be set; restart the container after changing env.
-- 403 `INVALID_ORIGIN` on sign-in from your frontend — your app's domain isn't `EZBASE_URL`; add it to `EZBASE_TRUSTED_ORIGINS`.
+- `redirect_uri_mismatch` — the callback in Google/GitHub must exactly match what Console → Auth shows (protocol, host, `/ez` if you use it).
+- Provider missing from `listProviders()` — it isn't enabled/saved in Console → Auth.
+- 403 `INVALID_ORIGIN` on browser sign-in — the **page** is on a different host than ezbase. Add that origin under “Need another website origin?” (no path). Same-host `/ez` does not need this.

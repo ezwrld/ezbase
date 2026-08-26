@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Loader2, AlertCircle, Radio, Database, ChevronDown, FileJson, HardDrive, Activity as ActivityIcon } from 'lucide-react'
+import { Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { Loader2, AlertCircle, Radio, Database, ChevronDown, FileJson, HardDrive, Activity as ActivityIcon, KeyRound } from 'lucide-react'
 import { useDatabases } from '@/hooks/useDatabases'
 import { useCollections } from '@/hooks/useCollections'
 import { useDocuments } from '@/hooks/useDocuments'
@@ -9,18 +10,32 @@ import { Dashboard } from '@/components/Dashboard'
 import { RulesEditor } from '@/components/RulesEditor'
 import { StorageBrowser } from '@/components/StorageBrowser'
 import { Activity } from '@/components/Activity'
+import { AuthSettings } from '@/components/AuthSettings'
 
-type View = 'dashboard' | 'collection' | 'rules' | 'storage' | 'activity'
+function collectionFromPath(pathname: string): string | null {
+  const m = pathname.match(/^\/collections\/([^/]+)$/)
+  return m ? decodeURIComponent(m[1]) : null
+}
+
+function sidebarNavClass({ isActive }: { isActive: boolean }) {
+  return `flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
+    isActive
+      ? 'bg-sky-400/10 text-sky-400'
+      : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+  }`
+}
 
 export default function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const selected = collectionFromPath(location.pathname)
+
   const [adminKey, setAdminKey] = useState<string | null>(() => localStorage.getItem('ezbase_admin_key'))
   const [keyInput, setKeyInput] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
 
   const [selectedDb, setSelectedDb] = useState('default')
-  const [selected, setSelected] = useState<string | null>(null)
-  const [view, setView] = useState<View>('dashboard')
   const [dbDropdownOpen, setDbDropdownOpen] = useState(false)
 
   // Hooks are called unconditionally (rules of hooks), but only used when authenticated
@@ -57,16 +72,14 @@ export default function App() {
   }
 
   function selectCollection(name: string) {
-    setSelected(name)
-    setView('collection')
+    navigate(`/collections/${encodeURIComponent(name)}`)
     refresh()
   }
 
   function selectDatabase(name: string) {
     setSelectedDb(name)
-    setSelected(null)
-    setView('dashboard')
     setDbDropdownOpen(false)
+    if (collectionFromPath(location.pathname)) navigate('/')
   }
 
   // Login screen
@@ -115,14 +128,15 @@ export default function App() {
     <div className="flex h-screen flex-col">
       {/* Header */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b-2 border-primary bg-zinc-950 px-5">
-        <button onClick={() => { setSelected(null); setView('dashboard') }} className="font-mono text-sm font-medium tracking-tight">
+        <Link to="/" className="font-mono text-sm font-medium tracking-tight">
           <span className="text-sky-400">ez</span>
           <span className="text-zinc-50">base</span>
           <span className="mx-0.5 font-normal text-zinc-600">/</span>
           <span className="font-normal text-zinc-600">console</span>
-        </button>
+        </Link>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handleLogout}
             className="rounded px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-300"
             title="Log out"
@@ -139,6 +153,7 @@ export default function App() {
           {/* Database selector */}
           <div className="relative border-b border-zinc-800 px-3 py-3">
             <button
+              type="button"
               onClick={() => setDbDropdownOpen(!dbDropdownOpen)}
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800"
             >
@@ -156,6 +171,7 @@ export default function App() {
                 )}
                 {databases.map((db) => (
                   <button
+                    type="button"
                     key={db}
                     onClick={() => selectDatabase(db)}
                     className={`flex w-full items-center px-3 py-1.5 text-left font-mono text-xs transition-colors ${
@@ -196,10 +212,11 @@ export default function App() {
 
             {collections.map((name) => (
               <button
+                type="button"
                 key={name}
                 onClick={() => selectCollection(name)}
                 className={`flex items-center justify-between px-4 py-1.5 text-left font-mono text-xs transition-colors ${
-                  view === 'collection' && selected === name
+                  selected === name
                     ? 'border-l-2 border-sky-400 bg-sky-400/10 text-zinc-100'
                     : 'border-l-2 border-transparent text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
                 }`}
@@ -214,102 +231,84 @@ export default function App() {
             ))}
           </div>
 
-          {/* Activity, Rules & Storage nav items */}
           <div className="border-t border-zinc-800 px-3 py-3 space-y-1">
-            <button
-              onClick={() => { setSelected(null); setView('activity') }}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
-                view === 'activity'
-                  ? 'bg-sky-400/10 text-sky-400'
-                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-              }`}
-            >
+            <NavLink to="/auth" className={sidebarNavClass}>
+              <KeyRound className="h-3.5 w-3.5" />
+              <span>Auth</span>
+            </NavLink>
+            <NavLink to="/activity" className={sidebarNavClass}>
               <ActivityIcon className="h-3.5 w-3.5" />
               <span>Activity</span>
-            </button>
-            <button
-              onClick={() => { setSelected(null); setView('rules') }}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
-                view === 'rules'
-                  ? 'bg-sky-400/10 text-sky-400'
-                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-              }`}
-            >
+            </NavLink>
+            <NavLink to="/rules" className={sidebarNavClass}>
               <FileJson className="h-3.5 w-3.5" />
               <span>Rules</span>
-            </button>
-            <button
-              onClick={() => { setSelected(null); setView('storage') }}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
-                view === 'storage'
-                  ? 'bg-sky-400/10 text-sky-400'
-                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-              }`}
-            >
+            </NavLink>
+            <NavLink to="/storage" className={sidebarNavClass}>
               <HardDrive className="h-3.5 w-3.5" />
               <span>Storage</span>
-            </button>
+            </NavLink>
           </div>
         </nav>
 
         {/* Main content */}
         <main className="flex flex-1 flex-col overflow-hidden bg-zinc-50">
-          {view === 'dashboard' && (
-            <Dashboard stats={stats} onSelectCollection={selectCollection} />
-          )}
+          <Routes>
+            <Route path="/" element={<Dashboard stats={stats} onSelectCollection={selectCollection} />} />
+            <Route path="/auth" element={<AuthSettings adminKey={adminKey} />} />
+            <Route path="/activity" element={<Activity adminKey={adminKey} />} />
+            <Route path="/rules" element={<RulesEditor adminKey={adminKey} />} />
+            <Route path="/storage" element={<StorageBrowser adminKey={adminKey} />} />
+            <Route
+              path="/collections/:name"
+              element={
+                selected ? (
+                  <>
+                    <div className="flex items-center justify-between border-b border-zinc-200 bg-white px-5 py-3">
+                      <div className="flex items-center gap-3">
+                        <h2 className="font-mono text-base font-semibold text-zinc-900">{selected}</h2>
+                        {!docLoading && (
+                          <span className="text-xs text-zinc-500">
+                            {totalCount.toLocaleString()} document{totalCount !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-1.5 text-xs text-emerald-600">
+                          <Radio className="h-3 w-3" />
+                          Live
+                        </div>
+                      </div>
+                    </div>
 
-          {view === 'activity' && <Activity adminKey={adminKey} />}
+                    <div className="flex-1 overflow-hidden">
+                      {docLoading && (
+                        <div className="flex items-center justify-center py-20">
+                          <Loader2 className="h-5 w-5 animate-spin text-zinc-400" />
+                        </div>
+                      )}
 
-          {view === 'rules' && <RulesEditor adminKey={adminKey} />}
+                      {docError && (
+                        <div className="flex items-center justify-center gap-2 py-20 text-sm text-red-500">
+                          <AlertCircle className="h-4 w-4" /> {docError}
+                        </div>
+                      )}
 
-          {view === 'storage' && <StorageBrowser adminKey={adminKey} />}
+                      {!docLoading && !docError && documents.length === 0 && (
+                        <div className="flex items-center justify-center py-20 text-sm text-zinc-400">
+                          Collection is empty
+                        </div>
+                      )}
 
-          {view === 'collection' && selected && (
-            <>
-              {/* Collection header */}
-              <div className="flex items-center justify-between border-b border-zinc-200 bg-white px-5 py-3">
-                <div className="flex items-center gap-3">
-                  <h2 className="font-mono text-base font-semibold text-zinc-900">{selected}</h2>
-                  {!docLoading && (
-                    <span className="text-xs text-zinc-500">
-                      {totalCount.toLocaleString()} document{totalCount !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5 text-xs text-emerald-600">
-                    <Radio className="h-3 w-3" />
-                    Live
-                  </div>
-                </div>
-              </div>
-
-              {/* Documents */}
-              <div className="flex-1 overflow-hidden">
-                {docLoading && (
-                  <div className="flex items-center justify-center py-20">
-                    <Loader2 className="h-5 w-5 animate-spin text-zinc-400" />
-                  </div>
-                )}
-
-                {docError && (
-                  <div className="flex items-center justify-center gap-2 py-20 text-sm text-red-500">
-                    <AlertCircle className="h-4 w-4" /> {docError}
-                  </div>
-                )}
-
-                {!docLoading && !docError && documents.length === 0 && (
-                  <div className="flex items-center justify-center py-20 text-sm text-zinc-400">
-                    Collection is empty
-                  </div>
-                )}
-
-                {!docLoading && !docError && documents.length > 0 && (
-                  <DocumentTable documents={documents} />
-                )}
-              </div>
-            </>
-          )}
+                      {!docLoading && !docError && documents.length > 0 && (
+                        <DocumentTable documents={documents} />
+                      )}
+                    </div>
+                  </>
+                ) : null
+              }
+            />
+          </Routes>
         </main>
       </div>
     </div>

@@ -34,18 +34,12 @@ volumes:
 
 Zero config — just start it. One service, one port (7003), one volume (`/data`). Console UI at `http://localhost:7003/console`.
 
-For a real deployment with auth, set these on the ezbase service:
+For a real deployment, set `ADMIN_KEY` and `EZBASE_URL` (the public URL of **this** ezbase, including `/ez` if you mount it there). OAuth providers: Console → **Auth**.
 
 ```yaml
     environment:
       ADMIN_KEY: "your-secret-admin-key"
-      EZBASE_URL: "https://ez.myapp.com"              # public URL — trusted origin + OAuth callbacks
-      EZBASE_TRUSTED_ORIGINS: "https://myapp.com"     # if your frontend is on another domain
-      SMTP_HOST: "smtp.resend.com"                    # for password-reset emails (optional —
-      SMTP_USER: "resend"                             #  without SMTP, reset links print to logs)
-      SMTP_PASS: "re_..."
-      SMTP_FROM: "MyApp <no-reply@myapp.com>"
-      # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET etc. — see docs/OAUTH-PROVIDERS.md
+      EZBASE_URL: "https://myapp.com/ez"
 ```
 
 ```bash
@@ -314,23 +308,13 @@ await ez.auth.changePassword('oldPassword', 'newPassword123')  // revokes other 
 await admin.auth.setPassword(userId, 'newPassword123')
 ```
 
-**Frontends on a different domain than ezbase** (e.g. app at `myapp.com`, ezbase at `ez.myvps.com`): browsers send an `Origin` header, and ezbase only trusts `EZBASE_URL` by default. Add your app origins via `EZBASE_TRUSTED_ORIGINS=https://myapp.com,https://admin.myapp.com` or auth requests get 403 `INVALID_ORIGIN`.
+**Frontends on a different host than ezbase** (app on Vercel, ezbase on a VPS): add that origin in Console → Auth → “Need another website origin?”. Same-host `/ez` mounts (Aura) do not need this.
 
 ### OAuth Providers
 
-ezbase supports OAuth sign-in (Google, GitHub, Microsoft, Apple) via BetterAuth. Providers are enabled by setting env vars — no code changes to the server.
+Open **Console → Auth**. Set the public URL (the ezbase URL, including `/ez` if you mount there). Toggle a provider, paste client ID + secret, copy the callback URL into Google/GitHub/etc.
 
-**Setup** (step-by-step credential acquisition for each provider: [docs/OAUTH-PROVIDERS.md](OAUTH-PROVIDERS.md)):
-
-1. Create an OAuth app with your provider (e.g. Google Cloud Console, GitHub Developer Settings)
-2. Set the callback URL to `{your-ezbase-url}/api/auth/callback/{provider}` (e.g. `https://myapp.com/api/auth/callback/google`)
-3. Set env vars on your ezbase instance:
-   ```
-   EZBASE_URL=https://myapp.com          # your public URL (required for OAuth)
-   GOOGLE_CLIENT_ID=your-client-id
-   GOOGLE_CLIENT_SECRET=your-client-secret
-   ```
-4. Restart the container
+Step-by-step credential screens: [docs/OAUTH-PROVIDERS.md](OAUTH-PROVIDERS.md).
 
 **SDK usage:**
 
@@ -356,16 +340,7 @@ const { providers, emailPassword } = await ez.auth.listProviders()
 
 **Account linking:** If a user signs up with email and later signs in with Google using the same email, BetterAuth auto-links the accounts — same user, two auth methods. Google, GitHub, Microsoft, and Apple are trusted providers (they verify emails).
 
-**Supported providers:** `google`, `github`, `microsoft`, `apple`
-
-**Env vars per provider:**
-
-| Provider | Client ID env | Client Secret env |
-|----------|--------------|-------------------|
-| Google | `GOOGLE_CLIENT_ID` | `GOOGLE_CLIENT_SECRET` |
-| GitHub | `GITHUB_CLIENT_ID` | `GITHUB_CLIENT_SECRET` |
-| Microsoft | `MICROSOFT_CLIENT_ID` | `MICROSOFT_CLIENT_SECRET` |
-| Apple | `APPLE_CLIENT_ID` | `APPLE_CLIENT_SECRET` |
+**Supported providers:** `google`, `github`, `microsoft`, `apple` — enable them in Console → Auth.
 
 ### Custom Claims & Role Management
 
@@ -386,6 +361,7 @@ await admin.auth.mergeClaims('user-456', { tier: 'pro', region: null })
 
 // List users (paginated)
 const users = await admin.auth.listUsers({ limit: 50, offset: 0 })
+// { id, email, providers: ['password'], created, lastLogin, role, claims }
 
 // Get a single user
 const user = await admin.auth.getUser('user-456')
@@ -747,6 +723,8 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 | POST | `/auth/sign-out` | — |
 | GET | `/auth/me` | — (returns `{ id, email, role, claims }`) |
 | GET | `/auth/providers` | — (returns `{ providers, emailPassword }`) |
+| GET | `/auth/settings` | Admin. Console Auth page payload. |
+| PUT | `/auth/settings` | Admin. `{ publicUrl, extraOrigins, providers }` — saves `/data/auth.json`, reloads BetterAuth. |
 | POST | `/auth/sign-in/social` | `{ provider, callbackURL }` (OAuth redirect) |
 | GET | `/auth/callback/:provider` | OAuth callback (handled by BetterAuth) |
 
@@ -754,7 +732,7 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 
 | Method | Path | Body |
 |--------|------|------|
-| GET | `/auth/users` | — (`?limit=&offset=`) |
+| GET | `/auth/users` | — (`?limit=&offset=`; includes `providers`, `lastLogin`) |
 | GET | `/auth/users/:id` | — |
 | PUT | `/auth/users/:id/role` | `{ role: "mover" }` |
 | PUT | `/auth/users/:id/claims` | `{ orgId: "123" }` (replaces all claims) |
@@ -871,8 +849,7 @@ For agents working **on ezbase**, not in an app that uses it:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ADMIN_KEY` | No | Admin password. Auto-generated if not set (printed to logs). To rotate: change this and restart. |
-| `EZBASE_URL` | For OAuth + browser auth | Public URL — trusted auth origin + OAuth callback URLs (e.g. `https://myapp.com`). |
-| `EZBASE_TRUSTED_ORIGINS` | If frontend on another domain | Extra origins allowed for browser auth, comma-separated. |
+| `EZBASE_URL` | If not on localhost:7003 | Public URL of this process, including `/ez` if you mount there. Console → Auth should match. |
 | `SMTP_HOST` | For reset/verification emails | SMTP server (Resend, Postmark, SES, Mailgun, ...). Unset = links print to server logs. |
 | `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | SMTP details. Port default 587 (465 = implicit TLS). |
 | `EZBASE_REQUIRE_EMAIL_VERIFICATION` | No | `true` = users must verify email before signing in. Needs SMTP. |
@@ -884,14 +861,6 @@ For agents working **on ezbase**, not in an app that uses it:
 | `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |
 | `BACKUP_PATH` | No | Backup directory. Default: `{STORAGE_PATH}/.backups`. |
 | `EZBASE_MAX_FILE_SIZE` | No | Max upload size in bytes. Default: 100MB. |
-| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID. Enables "Sign in with Google". |
-| `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret. |
-| `GITHUB_CLIENT_ID` | No | GitHub OAuth client ID. Enables "Sign in with GitHub". |
-| `GITHUB_CLIENT_SECRET` | No | GitHub OAuth client secret. |
-| `MICROSOFT_CLIENT_ID` | No | Microsoft OAuth client ID. Enables "Sign in with Microsoft". |
-| `MICROSOFT_CLIENT_SECRET` | No | Microsoft OAuth client secret. |
-| `APPLE_CLIENT_ID` | No | Apple OAuth client ID. Enables "Sign in with Apple". |
-| `APPLE_CLIENT_SECRET` | No | Apple OAuth client secret. |
 
 ## Collection Name Rules
 
