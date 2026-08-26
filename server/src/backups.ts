@@ -10,6 +10,8 @@ import tar from 'tar-stream'
 import { sql, ensureCollection, qualifiedTable, validateDatabaseName, validateCollectionName } from './db.js'
 import { publishChange } from './pubsub.js'
 import { getRules, isRulesReadonly, writeRules, validateRules, type RulesFile } from './rules.js'
+import { getAuthFile, isAuthSettingsReadonly, validateAuthFile, writeAuthFile, type AuthFile } from './auth-settings.js'
+import { rebuildAuth } from './auth.js'
 import { generateId } from './id.js'
 
 const STORAGE_PATH = process.env.STORAGE_PATH || '/data/files'
@@ -268,6 +270,7 @@ export async function createBackup(opts: { type?: BackupType; database?: string;
 
     if (includes.rules) {
       await addBufferEntry(pack, 'rules.json', JSON.stringify(getRules(), null, 2) + '\n')
+      await addBufferEntry(pack, 'auth.json', JSON.stringify(getAuthFile(), null, 2) + '\n')
     }
 
     if (includes.documents) {
@@ -677,6 +680,25 @@ export async function restoreFromStream(source: NodeJS.ReadableStream, opts: Res
 
     if (name === 'manifest.json') {
       stream.resume() // format version checks can hook in here later
+      return
+    }
+
+    if (name === 'auth.json') {
+      if (!includeRules) return stream.resume()
+      const chunks: Buffer[] = []
+      for await (const c of stream) chunks.push(c as Buffer)
+      if (isAuthSettingsReadonly()) {
+        summary.warnings.push('auth.json is read-only on this instance — auth settings not restored')
+        return
+      }
+      try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        if (!validateAuthFile(parsed)) throw new Error('invalid')
+        writeAuthFile(parsed as AuthFile)
+        rebuildAuth()
+      } catch {
+        summary.warnings.push('Invalid auth.json in backup — auth settings not restored')
+      }
       return
     }
 

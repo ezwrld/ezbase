@@ -13,6 +13,41 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.8 — 2026-08-25
+
+Auth setup in the console.
+
+### Added
+- **Console → Auth.** Set the public URL and turn on Google / GitHub / Microsoft / Apple by pasting client ID + secret. Callback URL is shown to copy. Saved to `/data/auth.json`. Takes effect without a restart.
+- **Console → Auth users table.** Email, UID, providers, created, last signed in, role. `GET /api/auth/users` includes `providers` (`password` / `google` / …) and `lastLogin`.
+- **Auth origin** field — host only (`https://app.whatever.com`), for when the app is on a different host than ezbase. Same host as the public URL is already allowed.
+- Console pages have URLs (`/console/auth`, `/activity`, …) so a refresh stays on that page.
+
+### Changed
+- OAuth providers are configured in the console, not `GOOGLE_*` env vars.
+- `EZBASE_URL` is only “how this process is mounted” (including `/ez`). It is not a second copy of trusted origins.
+- Full backups include `auth.json`.
+- `listUsers` / `getUser` include optional `providers` and `lastLogin`.
+
+### Fixed
+- Vite HMR uses the page’s port instead of hardcoding 7003.
+
+### Upgrade considerations
+- None if you already use Console → Auth. If you had `GOOGLE_*` in compose, paste those into Console → Auth once and delete the env vars.
+- If the public URL includes a path (`/ez`) that you change, restart once so the process mount matches.
+- Aura: keep `EZBASE_URL=https://aura.tl/ez` (or local equivalent) so the container serves `/ez`. Do not set `EZBASE_TRUSTED_ORIGINS`. Add Google in the console.
+
+### Agent prompt
+```
+Update this project to ezbase 1.8.
+
+1. Pin ghcr.io/ezwrld/ezbase:1.7 → 1.8 after the image is published. GET {ezbase}/api/health must report "1.8".
+2. SDK: optional `providers` and `lastLogin` on listUsers/getUser. Pin if the workflow published a new @ezwrld/ezbase.
+3. OAuth: open {ezbase}/console → Auth. Public URL is the ezbase URL including /ez if you mount there (Aura: https://aura.tl/ez). Paste provider credentials, copy the callback into Google/GitHub. Do not set GOOGLE_* or EZBASE_TRUSTED_ORIGINS. Same-host /ez does not need extra origins. The users table is on that page.
+```
+
+---
+
 ## v1.7 — 2026-08-25
 
 Query performance.

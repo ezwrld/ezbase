@@ -6,8 +6,9 @@ import { initPubSub } from './pubsub.js'
 import { initConfig, getPublicUrl } from './config.js'
 import { extractAuth } from './middleware.js'
 import { legacyRoutes, dbRoutes, adminRoutes } from './routes.js'
-import { auth, initAuth } from './auth.js'
+import { auth, initAuth, rebuildAuth } from './auth.js'
 import { loadRules, watchRules, rulesRoutes, legacyPermissionRoutes, dbLegacyPermissionRoutes } from './rules.js'
+import { watchAuthSettings } from './auth-settings.js'
 import { storageRoutes } from './storage.js'
 import { backupRoutes } from './backups.js'
 import { analyticsMiddleware, analyticsRoutes, initAnalytics } from './analytics.js'
@@ -73,6 +74,7 @@ initConfig()
 await migrateToSchemas()
 await loadRules()
 watchRules()
+watchAuthSettings(() => rebuildAuth())
 await Promise.all([init(), initPubSub(), initAuth(), initAnalytics()])
 
 console.log(`ezbase running on :${port}`)

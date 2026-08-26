@@ -30,7 +30,9 @@ interface AuthUser {
   claims: Record<string, unknown>
   name?: string
   image?: string
+  providers?: string[]
   created?: number
+  lastLogin?: number | null
   updated?: number
 }
 

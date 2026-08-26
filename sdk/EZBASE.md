@@ -207,7 +207,7 @@ After sign-in, the token is automatically attached to all subsequent requests. N
 
 ### OAuth sign in
 
-Requires provider env vars set on the server (e.g. `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `EZBASE_URL`).
+Requires the provider enabled in Console → Auth.
 
 ```ts
 // Redirect to OAuth provider (browser-only)

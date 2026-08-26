@@ -21,23 +21,9 @@ services:
       ADMIN_KEY: "test-admin-key"
       RULES_PATH: "/tmp/rules.json"
       STORAGE_PATH: "/tmp/ezbase-files"
-      EZBASE_URL: "http://localhost:7003"    # public URL — trusted auth origin + OAuth callback URLs
-      EZBASE_TRUSTED_ORIGINS: "${EZBASE_TRUSTED_ORIGINS:-}"   # extra browser origins allowed for auth, comma-separated
-      EZBASE_RATE_LIMIT: "${EZBASE_RATE_LIMIT:-false}"        # off in the dev stack only — test suites hammer auth
-      # SMTP_HOST: "smtp.resend.com"         # enables password reset / verification emails
-      # SMTP_PORT: "587"
-      # SMTP_USER: ""
-      # SMTP_PASS: ""
-      # SMTP_FROM: "MyApp <no-reply@myapp.com>"
-      # EZBASE_REQUIRE_EMAIL_VERIFICATION: "true"
-      # GOOGLE_CLIENT_ID: ""
-      # GOOGLE_CLIENT_SECRET: ""
-      # GITHUB_CLIENT_ID: ""
-      # GITHUB_CLIENT_SECRET: ""
-      # MICROSOFT_CLIENT_ID: ""
-      # MICROSOFT_CLIENT_SECRET: ""
-      # APPLE_CLIENT_ID: ""
-      # APPLE_CLIENT_SECRET: ""
+      EZBASE_URL: "http://localhost:7003"
+      AUTH_SETTINGS_PATH: "/tmp/auth.json"
+      EZBASE_RATE_LIMIT: "${EZBASE_RATE_LIMIT:-false}"
     volumes:
       - storage:/tmp/ezbase-files
     depends_on:

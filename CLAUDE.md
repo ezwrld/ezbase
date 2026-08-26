@@ -29,7 +29,7 @@ Detailed specs and plans live in `docs/`:
 - **Query filtering** — `where`, `orderBy`, `order`, `limit`
 - **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), auto-created on first write
 - **Per-collection tables** — each collection gets its own `col_<name>` Postgres table with GIN indexes
-- **Auth** — BetterAuth (email/password, OAuth providers, session tokens), per-collection permissions (public/authenticated/admin/owner/role:*), custom claims, user management endpoints, shared across databases. Password reset/change (SMTP via `SMTP_*` env, or links logged without it), admin set-password, optional email verification, brute-force rate limiting always on (`EZBASE_RATE_LIMIT=false` for test stacks only), `EZBASE_TRUSTED_ORIGINS` for cross-domain frontends
+- **Auth** — BetterAuth (email/password, OAuth). Console → Auth for public URL + providers (`/data/auth.json`) and a users table (email, UID, provider, created, last signed in). Per-collection permissions, claims, user management. Password reset (SMTP optional), rate limiting.
 - **Rules** — Declarative `rules.json` for per-collection access control + claim-based document filters (replaces `_ezbase_config` Postgres table)
 - **File Storage** — upload/download/delete files via REST, stored on disk (Docker volume), metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json`
 - **Backups** — streaming tar.gz backups (JSONL per collection + manifest + auth + storage + rules), granular restore (per database/collection/part), query-filtered restore (`where` + time bounds), conflict modes (replace/skip/error), `ez backup --stdout` piping for off-site — see `docs/BACKUPS.md`
@@ -79,7 +79,8 @@ Verify: `curl http://localhost:7003/api/health`
 | `server/src/analytics.ts` | Request analytics: classification middleware, minute-bucket aggregation, summary/timeseries/live endpoints |
 | `server/src/routes.ts` | CRUD, SSE |
 | `server/src/query.ts` | Query SQL + auto btree indexes for JSON where/orderBy |
-| `server/src/auth.ts` | BetterAuth instance + `/me` handler + user management endpoints |
+| `server/src/auth.ts` | BetterAuth instance + `/me` + user management + auth settings |
+| `server/src/auth-settings.ts` | `/data/auth.json` — public URL + OAuth providers (console) |
 | `server/src/middleware.ts` | Auth extraction (BetterAuth sessions + claims), permission checks via rules |
 | `server/src/rules.ts` | Rules engine: load/watch/validate rules.json, resolve filters, API routes, legacy compat |
 | `server/src/db.ts` | Postgres connection, `ensureCollection()`, schema init |
@@ -134,7 +135,9 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | POST | `/auth/sign-out` | Logout (BetterAuth) |
 | GET | `/auth/me` | Current user (includes role + claims) |
 | GET | `/auth/providers` | List enabled OAuth providers |
-| GET | `/auth/users` | List users (admin, `?limit=&offset=`) |
+| GET | `/auth/settings` | Auth config for console (admin) |
+| PUT | `/auth/settings` | Save public URL + providers (admin) |
+| GET | `/auth/users` | List users (admin, `?limit=&offset=`; includes `providers`, `lastLogin`) |
 | GET | `/auth/users/:id` | Get user by ID (admin) |
 | PUT | `/auth/users/:id/role` | Set user role (admin) |
 | PUT | `/auth/users/:id/claims` | Replace user claims (admin) |

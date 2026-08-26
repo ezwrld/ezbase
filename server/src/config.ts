@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { peekAuthPublicUrl } from './auth-settings.js'
 
 let adminKey: string
 
@@ -26,7 +27,7 @@ export function initConfig() {
  */
 export function getPublicUrl() {
   const port = parseInt(process.env.PORT || '8080')
-  const raw = process.env.EZBASE_URL || `http://localhost:${port}`
+  const raw = process.env.EZBASE_URL || peekAuthPublicUrl() || `http://localhost:${port}`
   const parsed = new URL(raw)
   const basePath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '')
   return { origin: parsed.origin, basePath }
