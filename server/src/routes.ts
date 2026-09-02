@@ -10,6 +10,8 @@ import { canReadCollection, requirePermission } from './middleware.js'
 import type { AppliedFilter } from './rules.js'
 
 // ── Helpers ───────────────────────────────────────────────────
+type JsonValue = Parameters<typeof sql.json>[0]
+
 function formatDoc(row: Record<string, unknown>) {
   return {
     id: row.id as string,
@@ -268,7 +270,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
     const rows = await sql`
       INSERT INTO ${table} (id, data, created_at, updated_at)
-      VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
+      VALUES (${id}, ${sql.json(body as JsonValue)}, ${now}, ${now})
       RETURNING *
     `
 
@@ -364,7 +366,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
     const rows = await sql`
       INSERT INTO ${table} (id, data, created_at, updated_at)
-      VALUES (${id}, ${sql.json(body)}, ${now}, ${now})
+      VALUES (${id}, ${sql.json(body as JsonValue)}, ${now}, ${now})
       ON CONFLICT (id)
       DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
       RETURNING *, (xmax = 0) AS is_new
@@ -415,13 +417,13 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const rows = expectedUpdated === null
       ? await sql`
           UPDATE ${table}
-          SET data = data || ${sql.json(body)}, updated_at = GREATEST(${now}, updated_at + 1)
+          SET data = data || ${sql.json(body as JsonValue)}, updated_at = GREATEST(${now}, updated_at + 1)
           WHERE id = ${id}
           RETURNING *
         `
       : await sql`
           UPDATE ${table}
-          SET data = data || ${sql.json(body)}, updated_at = GREATEST(${now}, updated_at + 1)
+          SET data = data || ${sql.json(body as JsonValue)}, updated_at = GREATEST(${now}, updated_at + 1)
           WHERE id = ${id} AND updated_at = ${expectedUpdated}
           RETURNING *
         `

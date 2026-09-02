@@ -165,7 +165,7 @@ async function prune() {
 
 // ── Routes (admin-only) ───────────────────────────────────────
 
-function requireAdmin(c: Context, next: Next) {
+async function requireAdmin(c: Context, next: Next) {
   const role = c.get('role') || 'anonymous'
   if (role !== 'admin') {
     return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)

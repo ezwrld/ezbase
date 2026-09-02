@@ -1,6 +1,23 @@
 # CI/CD
 
-ezbase has two GitHub Actions workflows that auto-publish on merge to master.
+ezbase validates pull requests, then uses two publishing workflows after merge to `master`.
+
+---
+
+## Pull request validation — `ci.yml`
+
+**Trigger:** Every pull request targeting `master`, plus manual dispatch.
+
+The `Release gate` job must pass before merge. It:
+
+1. Strictly type-checks, bundles, and tests the server
+2. Builds the console with its production TypeScript settings
+3. Builds and tests the SDK
+4. Builds the root all-in-one Docker image that the release workflow will publish
+
+Repository rules must require a pull request and the `Release gate` status check for `master`.
+Also block force pushes and do not allow bypassing the rule. The workflow alone reports failures;
+the repository rule is what prevents a failing or unchecked PR from merging.
 
 ---
 
@@ -9,11 +26,11 @@ ezbase has two GitHub Actions workflows that auto-publish on merge to master.
 **Trigger:** Any push to `master` that changes files in `sdk/`.
 
 **What it does:**
-1. Bumps `sdk/package.json` patch version (0.1.2 → 0.1.3)
+1. Uses the unpublished `sdk/package.json` version, or bumps its minor version when that version already exists on npm
 2. Builds the SDK (`tsc`)
 3. Publishes to npm as `@ezwrld/ezbase` using OIDC trusted publishing (no token needed)
 4. Commits the version bump back to master
-5. Tags `sdk-v0.1.3` and pushes the tag
+5. Tags `sdk-vX.Y.0` and pushes the tag
 
 **Auth:** Uses npm's OIDC trusted publishing. No `NPM_TOKEN` secret needed. The `id-token: write` permission lets GitHub Actions authenticate directly with npm.
 
@@ -26,8 +43,8 @@ ezbase has two GitHub Actions workflows that auto-publish on merge to master.
 This is configured at npmjs.com → `@ezwrld/ezbase` → Settings → Trusted Publishers.
 
 **Requirements:**
-- npm CLI v11.5.1+ (the workflow upgrades npm automatically)
-- Node 22 (for the build step)
+- npm CLI v11.5.1+
+- Node 24 (for the build step)
 
 ---
 
@@ -38,8 +55,8 @@ This is configured at npmjs.com → `@ezwrld/ezbase` → Settings → Trusted Pu
 **What it does:**
 1. Determines next version by finding the latest `v*` tag and bumping **minor** (`1.6` → `1.7`)
 2. Builds the all-in-one Docker image from the root `Dockerfile`
-3. Pushes to GitHub Container Registry as `ghcr.io/ezwrld/ezbase:X.X.X` + `:latest`
-4. Tags `vX.X.X` and pushes the tag
+3. Pushes to GitHub Container Registry as `ghcr.io/ezwrld/ezbase:X.Y` + `:latest`
+4. Tags `vX.Y` and pushes the tag
 
 **Auth:** Uses the built-in `GITHUB_TOKEN` — no extra secrets needed. The `packages: write` permission grants GHCR access.
 
@@ -58,16 +75,16 @@ All managed by supervisord, exposed on port 7003, data at `/data`.
 
 | Tag format | What it is |
 |-----------|-----------|
-| `sdk-v0.1.3` | SDK version published to npm |
-| `v0.0.5` | Docker image version pushed to GHCR |
+| `sdk-v1.5.0` | SDK version published to npm |
+| `v1.8` | Docker image version pushed to GHCR |
 
-SDK and image versions are independent. Both auto-increment patch on every qualifying merge.
+SDK and image versions are independent. Both auto-increment the minor version on every qualifying merge.
 
 ---
 
 ## Triggering a release
 
-Just merge to master. If your PR touches `sdk/` files, the SDK publishes. If it touches server/console/docker files, the image builds. If both, both run.
+Open a pull request to `master` and wait for the required `Release gate` check. After it passes and the PR merges, SDK changes publish the SDK and server/console/docker changes publish the image. If both changed, both publishing workflows run.
 
 **Changelog is the user-facing contract.** The PR must include `## vX.Y` matching the version that will be tagged (current latest image tag + one minor). The image workflow copies that section into the GitHub Release. Include **Upgrade considerations** and an **Agent prompt** (pin `ghcr.io/ezwrld/ezbase:X.Y`, `GET /api/health`, SDK version). Do not tell consuming apps to upgrade until the publish workflow is green.
 
