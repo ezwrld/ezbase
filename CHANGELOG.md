@@ -31,6 +31,7 @@ Auth setup in the console.
 
 ### Fixed
 - Vite HMR uses the page’s port instead of hardcoding 7003.
+- Console collection routes pass the strict production TypeScript build.
 
 ### Upgrade considerations
 - None if you already use Console → Auth. If you had `GOOGLE_*` in compose, paste those into Console → Auth once and delete the env vars.

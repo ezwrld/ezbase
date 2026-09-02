@@ -82,7 +82,7 @@ function timestampName(): string {
   return new Date().toISOString().replace(/[-:]/g, '').replace('.', '')
 }
 
-function requireAdmin(c: Context, next: Next) {
+async function requireAdmin(c: Context, next: Next) {
   const role = c.get('role') || 'anonymous'
   if (role !== 'admin') {
     return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
@@ -600,6 +600,9 @@ export async function restoreFromStream(source: NodeJS.ReadableStream, opts: Res
     const counts = { restored: 0, skipped: 0 }
     summary.auth[table] = counts
     await sql.begin(async (trx) => {
+      // postgres.js's TransactionSql type drops Sql's call signatures via Omit,
+      // even though transactions expose the same tagged-template API at runtime.
+      const tx = trx as unknown as typeof sql
       for await (const line of lines(stream)) {
         let row: Record<string, unknown>
         try {
@@ -612,19 +615,19 @@ export async function restoreFromStream(source: NodeJS.ReadableStream, opts: Res
         const cols = Object.keys(row).filter((k) => k !== 'id')
         let inserted
         if (conflict === 'replace') {
-          inserted = await trx`
-            INSERT INTO public.${trx(table)} ${trx(row)}
-            ON CONFLICT (id) DO UPDATE SET ${trx(row as any, ...cols as any)}
+          inserted = await tx`
+            INSERT INTO public.${tx(table)} ${tx(row)}
+            ON CONFLICT (id) DO UPDATE SET ${tx(row as any, ...cols as any)}
             RETURNING id
           `
         } else if (conflict === 'skip') {
-          inserted = await trx`
-            INSERT INTO public.${trx(table)} ${trx(row)}
+          inserted = await tx`
+            INSERT INTO public.${tx(table)} ${tx(row)}
             ON CONFLICT (id) DO NOTHING
             RETURNING id
           `
         } else {
-          inserted = await trx`INSERT INTO public.${trx(table)} ${trx(row)} RETURNING id`
+          inserted = await tx`INSERT INTO public.${tx(table)} ${tx(row)} RETURNING id`
         }
         counts.restored += inserted.length
         counts.skipped += 1 - inserted.length

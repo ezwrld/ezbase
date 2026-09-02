@@ -14,7 +14,8 @@ import { AuthSettings } from '@/components/AuthSettings'
 
 function collectionFromPath(pathname: string): string | null {
   const m = pathname.match(/^\/collections\/([^/]+)$/)
-  return m ? decodeURIComponent(m[1]) : null
+  const encodedName = m?.[1]
+  return encodedName ? decodeURIComponent(encodedName) : null
 }
 
 function sidebarNavClass({ isActive }: { isActive: boolean }) {
