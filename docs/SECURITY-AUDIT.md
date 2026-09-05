@@ -2,6 +2,8 @@
 
 Audit of the ezbase codebase assuming source code is public and an attacker knows the target runs ezbase.
 
+> Historical findings. Current release work should be checked against `CHANGELOG.md`. The deny-by-default hardening removes read-triggered collection creation, restricts named-database creation to admins, and prevents client queries from creating indexes.
+
 ## CRITICAL
 
 ### 1. No rate limiting — brute force auth wide open
@@ -48,6 +50,8 @@ For SSE connections, the token goes in the URL (`?token=<bearer_token>`). This m
 
 ### 8. Unlimited table creation / resource exhaustion
 `ensureCollection` auto-creates tables on any request. With default rules (`"default": "public"`), any anonymous `GET /api/collections/<anything>` creates a Postgres table. An attacker can create tens of thousands of tables to exhaust Postgres catalog resources.
+
+**Resolved in v1.9:** fresh instances default to `"admin"`; reads do not create tables; non-admin callers cannot create named database schemas; client queries cannot create indexes. Permitted writes still auto-create collection tables.
 
 ### 9. No request body size limits
 JSON payloads to POST/PUT/PATCH have no size cap. An attacker can POST massive JSON bodies, consuming all server memory. File uploads have `MAX_FILE_SIZE`, but document endpoints don't.

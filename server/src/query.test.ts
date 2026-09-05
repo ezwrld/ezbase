@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { buildQuerySql, collectIndexHints, parseWhere, sanitizeField } from './query.js'
+import { buildQuerySql, collectIndexHints, parseWhere, sanitizeField, shouldEnsureQueryIndexes } from './query.js'
 
 afterEach(() => {
   delete process.env.EZBASE_AUTO_INDEX
@@ -46,6 +46,18 @@ describe('collectIndexHints', () => {
     )
     expect(hints.eqFields).toEqual(['sport', 'status', 'source'])
     expect(hints.orderField).toBe('observedAt')
+  })
+})
+
+describe('shouldEnsureQueryIndexes', () => {
+  test('only lets admin queries create persistent indexes', () => {
+    expect(shouldEnsureQueryIndexes(false)).toBe(false)
+    expect(shouldEnsureQueryIndexes(true)).toBe(true)
+  })
+
+  test('respects the auto-index feature flag for admins', () => {
+    process.env.EZBASE_AUTO_INDEX = 'false'
+    expect(shouldEnsureQueryIndexes(true)).toBe(false)
   })
 })
 

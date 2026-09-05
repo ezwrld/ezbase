@@ -679,6 +679,61 @@ async function testCollectionValidation() {
   }
 }
 
+async function testSafeDatabaseCreation() {
+  console.log('\n== Safe Database Creation ==')
+  const admin = new EzBase({ url: URL, adminKey: ADMIN_KEY })
+  const user = new EzBase({ url: URL })
+  await user.auth.signIn({ email: 'qa-user@example.com', password: 'testpass123' })
+  const missingCollection = 'qa_missing_read_probe'
+  const allowedCollection = 'qa_allowed_create_probe'
+  const unlistedCollection = 'qa_unlisted_create_probe'
+  const missingDatabase = 'qa_missing_database_probe'
+
+  await admin.setRules({
+    default: 'authenticated',
+    collections: {
+      [missingCollection]: { read: 'public', write: 'authenticated' },
+      [allowedCollection]: 'authenticated',
+    },
+  })
+
+  const beforeCollections = await admin.listCollections()
+  const missingRead = await fetch(`${URL}/api/collections/${missingCollection}`)
+  const missingRows = await missingRead.json()
+  const afterCollections = await admin.listCollections()
+  assert(missingRead.ok && Array.isArray(missingRows) && missingRows.length === 0, 'missing permitted collection reads as empty')
+  assert(!beforeCollections.includes(missingCollection) && !afterCollections.includes(missingCollection), 'GET does not create a missing collection table')
+
+  try {
+    await user.collection(unlistedCollection).add({ shouldNotExist: true })
+    assert(false, 'fallback write access cannot create an unlisted collection')
+  } catch {
+    assert(true, 'fallback write access cannot create an unlisted collection')
+  }
+  assert(!(await admin.listCollections()).includes(unlistedCollection), 'rejected unlisted write creates no table')
+
+  const allowedDoc = await user.collection(allowedCollection).add({ createdByClient: true })
+  assert(allowedDoc.data.createdByClient === true, 'explicitly allowed client write creates its collection lazily')
+  assert((await admin.listCollections()).includes(allowedCollection), 'explicitly allowed collection now exists')
+
+  const missingDbRead = await fetch(`${URL}/api/db/${missingDatabase}/collections/${missingCollection}`)
+  const databasesAfterRead = await admin.listDatabases()
+  assert(missingDbRead.status === 404, 'non-admin cannot create a named database through a permitted read')
+  assert(!databasesAfterRead.includes(missingDatabase), 'permitted read does not create a named database schema')
+
+  const adminMissingRead = await admin.database(missingDatabase).collection(missingCollection).get()
+  const databasesAfterAdminRead = await admin.listDatabases()
+  assert(adminMissingRead.length === 0, 'admin reads a missing named collection as empty')
+  assert(!databasesAfterAdminRead.includes(missingDatabase), 'admin read does not create a named database schema')
+
+  await admin.database(missingDatabase).collection(missingCollection).add({ seeded: true })
+  const databasesAfterWrite = await admin.listDatabases()
+  assert(databasesAfterWrite.includes(missingDatabase), 'admin first write creates a named database')
+  await apiFetch(`/db/${missingDatabase}`, { method: 'DELETE' })
+
+  await admin.setRules({ default: 'public' })
+}
+
 async function testPermissionLevels() {
   console.log('\n== Permission Levels ==')
   const admin = new EzBase({ url: URL, adminKey: ADMIN_KEY })
@@ -765,6 +820,7 @@ async function main() {
   await testPermissionLevels()
   await testReadWritePermissions()
   await testCollectionValidation()
+  await testSafeDatabaseCreation()
   await testStorage()
   await testSSE()
 

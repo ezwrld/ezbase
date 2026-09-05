@@ -27,7 +27,7 @@ Detailed specs and plans live in `docs/`:
 - **Document CRUD** — create, read, update (full + partial), delete via REST
 - **Real-time** — SSE subscriptions at collection, document, and query level
 - **Query filtering** — `where`, `orderBy`, `order`, `limit`
-- **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), auto-created on first write
+- **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), created on an admin's first write
 - **Per-collection tables** — each collection gets its own `col_<name>` Postgres table with GIN indexes
 - **Auth** — BetterAuth (email/password, OAuth). Console → Auth for public URL + providers (`/data/auth.json`) and a users table (email, UID, provider, created, last signed in). Per-collection permissions, claims, user management. Password reset (SMTP optional), rate limiting.
 - **Rules** — Declarative `rules.json` for per-collection access control + claim-based document filters (replaces `_ezbase_config` Postgres table)
@@ -51,7 +51,7 @@ Monorepo: `server/`, `sdk/`, `console/`. Runs as a Docker Compose stack in devel
 |-----------|--------|
 | **Runtime** | Bun + Hono |
 | **Storage** | Per-collection tables (`col_*`) in per-database schemas (`db_*`) with JSONB + GIN indexes |
-| **Databases** | Multiple databases per instance, each a Postgres schema, auto-created on first write |
+| **Databases** | Multiple databases per instance, each a Postgres schema, created on an admin's first write |
 | **Pub/sub** | Postgres LISTEN/NOTIFY |
 | **Auth** | BetterAuth (sessions, email/password, OAuth providers) — shared across databases |
 | **Files** | On-disk storage (Docker volume) + metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json` |
@@ -156,11 +156,13 @@ Each database is a Postgres schema (`db_<name>`). Per-collection tables within e
 
 Collection permissions are defined in `/data/rules.json` (one file per instance, covers all databases). Format:
 
-Fresh instances default to `{"read": "public", "write": "authenticated"}`; the server warns at boot if the effective write default is `public`. Rule filters are enforced on writes too: creates auto-stamp missing single-value filter fields (owner's `userId` etc.) and reject mismatches; PATCH cannot move a doc out of the caller's filter scope.
+Fresh instances default to `{"default":"admin"}`: every client-visible collection and bucket must be explicitly configured. Reads never create schemas, tables, or indexes; named databases are created only by an admin write. Rule filters are enforced on writes too: creates auto-stamp missing single-value filter fields (owner's `userId` etc.) and reject mismatches; PATCH cannot move a doc out of the caller's filter scope.
+
+Collection rules are an access whitelist, not schema declarations. They create no table and define no fields. The first permitted POST/PUT still creates a collection automatically; admin SDK writes can create any collection without a rule. Avoid a broad `default: "authenticated"`, which would let one signed-in caller manufacture unlimited collection names.
 
 ```json
 {
-  "default": "public",
+  "default": "admin",
   "collections": {
     "feed": { "read": "public", "write": "authenticated" },
     "profiles": { "read": "public", "write": "owner" },
@@ -186,13 +188,13 @@ Permission levels: `public`, `authenticated`, `admin`, `owner` (sugar for `{ acc
 
 ## Releasing
 
-Automatic on merge to master, major.minor versioning (minor bumps per release). GitHub Actions detect what changed:
-- `sdk/**` changed → bumps SDK minor version, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0)
-- `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → bumps image minor version, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.Y`
+Automatic on merge to master, using a simple two-part release sequence (`1.8` → `1.9` → `1.10`). GitHub Actions detect what changed:
+- `sdk/**` changed → increments the SDK's middle component, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0)
+- `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → increments the image tag's right-hand number, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.Y`
 
-**Every release PR must add a `CHANGELOG.md` entry** — `## vX.Y — date` matching the version the workflow will mint (latest `v*` tag + 0.1). Required sections: **Upgrade considerations** ("None." if none) and **Agent prompt** (copy-paste for consuming apps: pin the new image, health check, SDK pin, anything they must change). Breaking changes require a new major and a **⚠ BREAKING** section.
+**Every release PR must add a `CHANGELOG.md` entry** — `## vX.Y — date` matching the version the workflow will mint (increment the right-hand integer: `1.9` → `1.10`). Required sections: **Upgrade considerations** ("None." if none) and **Agent prompt** (copy-paste for consuming apps: pin the new image, health check, SDK pin, anything they must change). Compatibility changes are explained there; they do not change the two-part numbering scheme.
 
-The image workflow (`publish-image.yml`) auto-bumps minor, pushes `ghcr.io/ezwrld/ezbase:X.Y`, tags `vX.Y`, and creates the GitHub Release from that CHANGELOG section. `/api/health` reports the version baked in at image build.
+The image workflow (`publish-image.yml`) increments the right-hand version number, pushes `ghcr.io/ezwrld/ezbase:X.Y`, tags `vX.Y`, and creates the GitHub Release from that CHANGELOG section. `/api/health` reports the version baked in at image build.
 
 **Do not tell consuming apps to upgrade until that workflow is green** and `gh release view vX.Y` exists. Then they only need: “update ezbase” + the Agent prompt.
 

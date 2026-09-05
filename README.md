@@ -25,10 +25,23 @@ docker compose up -d
 npm install @ezwrld/ezbase
 ```
 
+Fresh instances deny client access until you configure rules. Get the admin key
+from `docker compose logs ezbase`, open `http://localhost:7003/console`, and set:
+
+```json
+{
+  "default": "admin",
+  "collections": {
+    "todos": "authenticated"
+  }
+}
+```
+
 ```typescript
 import { EzBase } from '@ezwrld/ezbase'
 
 const ez = new EzBase({ url: 'http://localhost:7003' })
+await ez.auth.signUp({ email: 'you@example.com', password: 'change-me-now' })
 
 await ez.collection('todos').add({ title: 'Ship it', done: false })
 const todos = await ez.collection('todos').where('done', '==', false).get()
@@ -38,7 +51,7 @@ const titles = await ez.collection('todos').select('title').get()
 ez.collection('todos').onSnapshot((docs) => render(docs))
 ```
 
-Collections are created on first write — no schema, no migrations. Admin console at `http://localhost:7003/console` (admin key prints in the logs on first boot).
+Rules whitelist client-visible collection names; they do not define tables or fields. Collections are still created on the first permitted write—no schema or migrations—and admin SDK writes can create unlisted collections. Named databases are created by an admin's first write. Reads never create schemas, tables, or indexes. Admin console at `http://localhost:7003/console` (admin key prints in the logs on first boot).
 
 ## Auth and access rules
 
@@ -46,7 +59,7 @@ Email/password auth works with no configuration; OAuth providers (Google, GitHub
 
 ```json
 {
-  "default": { "read": "public", "write": "authenticated" },
+  "default": "admin",
   "collections": {
     "api_keys": "owner",
     "invoices": { "access": "authenticated", "filter": { "orgId": "claims.orgId" } },
@@ -77,7 +90,7 @@ The complete reference is one file, written to be consumed by agents:
 https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/skill.md
 ```
 
-[`llms.txt`](llms.txt) lists all reference URLs. Running instances report their version at `GET /api/health`; [`CHANGELOG.md`](CHANGELOG.md) documents upgrade considerations per release. Versioning is `major.minor`: minor releases are additive; breaking changes only occur in a new major and are marked in the changelog.
+[`llms.txt`](llms.txt) lists all reference URLs. Running instances report their version at `GET /api/health`; [`CHANGELOG.md`](CHANGELOG.md) documents upgrade considerations per release. Image versions use a sequential two-part series (`1.8`, `1.9`, `1.10`); compatibility notes live in each changelog entry rather than in semantic version levels.
 
 ## Docs
 

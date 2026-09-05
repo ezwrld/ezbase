@@ -4,7 +4,7 @@
 
 ## What is ezbase?
 
-A self-hosted document database. One Docker image, one port, zero config. Think Firebase but self-hosted.
+A self-hosted document database. One Docker image, one port, no schema boilerplate. Think Firebase but self-hosted.
 
 ezbase is a **DX wrapper**, not a database engine. Under the hood:
 
@@ -32,7 +32,7 @@ volumes:
   ezbase-data:
 ```
 
-Zero config — just start it. One service, one port (7003), one volume (`/data`). Console UI at `http://localhost:7003/console`.
+Start it with one service, one port (7003), and one volume (`/data`). Console UI is at `http://localhost:7003/console`. Fresh instances deny client access until you explicitly configure collection and bucket rules in Console → **Rules**; the admin key still works immediately.
 
 For a real deployment, set `ADMIN_KEY` and `EZBASE_URL` (the public URL of **this** ezbase, including `/ez` if you mount it there). OAuth providers: Console → **Auth**.
 
@@ -51,7 +51,35 @@ environment:
   ADMIN_KEY: "my-secret-key"
 ```
 
-### 2. Install the SDK
+### 2. Configure client access
+
+Open `http://localhost:7003/console`, enter the admin key, and add explicit
+rules for every collection and bucket your client should use. For example:
+
+```json
+{
+  "default": "admin",
+  "collections": {
+    "todos": "authenticated",
+    "feed": { "read": "public", "write": "authenticated" }
+  },
+  "buckets": {
+    "avatars": "owner"
+  }
+}
+```
+
+Keep `default` set to `admin`. Server-side SDK clients using the admin key can
+still create and access any collection; browser/user clients get only the
+resources listed here.
+
+These entries are an access whitelist, not schema declarations: they do not
+create tables or define fields. A listed collection is still created lazily on
+its first permitted frontend write. An admin SDK write can create any collection
+without listing it first. Do not use `default: "authenticated"` as a shortcut;
+that would let any signed-in account invent unlimited collection names.
+
+### 3. Install the SDK
 
 ```bash
 npm install @ezwrld/ezbase
@@ -81,7 +109,7 @@ There is one SDK, not a separate server package. Jobs and APIs pass `adminKey` a
 
 ### Documents — CRUD
 
-Collections are created automatically on first write. No setup needed.
+Collections are created automatically on their first permitted write. Configure only the collection's access rule before accessing it from a client—there is no table definition, field schema, or migration. Reads of missing collections return empty results without creating tables.
 
 ```typescript
 // Create
@@ -171,7 +199,7 @@ GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
 
 Always pass `.limit()` (or `?limit=`). Lists default to 100 and never return more than 10000 (`EZBASE_MAX_LIMIT`), including with the admin key. `limit=0` is an error.
 
-**Sortable/filterable fields:** Any field in your data, plus `created` and `updated` (document timestamps). Equality filters and `orderBy` on JSON fields create btree indexes automatically (composite of up to three equality fields plus the sort) so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
+**Sortable/filterable fields:** Any field in your data, plus `created` and `updated` (document timestamps). Admin queries create btree indexes automatically for their JSON filter/sort shapes (composite of up to three equality fields plus the sort); client queries never create persistent database objects. Warm production query shapes once with an admin client so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
 
 ### Real-Time (SSE)
 
@@ -213,7 +241,7 @@ const unsub = ez.collection('todos').onSnapshot(
 
 One ezbase instance can have multiple databases. Each database is an isolated set of collections. Auth is shared across all databases.
 
-Databases auto-create on first write, just like collections:
+Named databases are created on an admin's first write. Once created, clients can use collections allowed by the instance rules:
 
 ```typescript
 // Default database — most projects only ever use this
@@ -221,8 +249,9 @@ await ez.collection('todos').add({ title: 'Ship it' })
 // ↑ shorthand for ez.database('default').collection('todos')
 
 // Named databases — isolated document stores, shared auth
-const auburn = ez.database('auburn')
-const oxford = ez.database('oxford')
+const admin = new EzBase({ url: '...', adminKey: '...' })
+const auburn = admin.database('auburn')
+const oxford = admin.database('oxford')
 
 await auburn.collection('orders').add({ customer: 'Alice', total: 250 })
 await oxford.collection('orders').add({ customer: 'Bob', total: 180 })
@@ -498,7 +527,7 @@ Buckets accept a single level or a read/write split (`{ "read": "public", "write
 
 ```json
 {
-  "default": "public",
+  "default": "admin",
   "collections": { ... },
   "buckets": {
     "avatars": "authenticated",
@@ -533,7 +562,7 @@ Permissions are defined in `rules.json` — a single file per ezbase instance. T
 
 ```json
 {
-  "default": "public",
+  "default": "admin",
   "collections": {
     "feed": { "read": "public", "write": "authenticated" },
     "profiles": { "read": "public", "write": "owner" },
@@ -554,10 +583,10 @@ Permissions are defined in `rules.json` — a single file per ezbase instance. T
 - If claim is an array → SQL `ANY()` (IN); if string → `=`
 - Multiple filter keys → AND logic
 - `"owner"` is sugar for `{ "access": "authenticated", "filter": { "userId": "auth.id" } }`
-- `default` is fallback for unlisted collections, also supports `{ "read": "public", "write": "authenticated" }`
+- `default` is the fallback for unlisted collections and buckets. Keep it `"admin"` and explicitly list client-visible resources.
 - If only `read` or `write` is specified, the other falls back to `default`
 
-**Fresh instances default to `{ "read": "public", "write": "authenticated" }`** — anyone can read, writes need a signed-in user or the admin key. Set `"default": "public"` explicitly to open writes (the server logs a warning when you do).
+**Fresh instances default to `"admin"`.** Unconfigured collections and buckets cannot be read or written by clients. Add an explicit rule before client use; set `"public"` only when anonymous reads and writes are genuinely intended. Even if a fallback permits writes, a non-admin cannot create a previously unseen collection name unless that name has an explicit collection rule. Once the table exists, the fallback applies normally.
 
 **Filters are enforced on writes, not just reads:**
 - **Create**: missing filter fields are **auto-stamped** (in an `owner` collection, `add({ title })` gets `userId` set to the caller automatically); a mismatching value is rejected with 403 — users can't create docs outside their own scope.
@@ -610,7 +639,7 @@ const admin = new EzBase({ url: '...', adminKey: '...' })
 await admin.auth.setRole('user-456', 'mover')
 await admin.auth.setClaims('user-456', { orgIds: ['auburn', 'oxford'] })
 await admin.setRules({
-  default: 'public',
+  default: 'admin',
   collections: {
     move_orders: { access: 'role:mover', filter: { orgId: 'claims.orgIds' } },
   },
@@ -678,7 +707,7 @@ const admin = new EzBase({ url: '...', adminKey: '...' })
 await admin.auth.setRole('user-456', 'mover')
 await admin.auth.setClaims('user-456', { orgIds: ['auburn', 'oxford'] })
 await admin.setRules({
-  default: 'public',
+  default: 'admin',
   collections: {
     move_orders: { access: 'role:mover', filter: { orgId: 'claims.orgIds' } },
     user_notes: 'owner',  // sugar for { access: 'authenticated', filter: { userId: 'auth.id' } }
@@ -831,15 +860,15 @@ For agents maintaining an ezbase deployment:
 
 1. **Find the running version**: `GET /api/health` → `{ "status": "ok", "version": "1.0" }` (`"dev"` = non-release build). SDK version is in your `package.json` (`@ezwrld/ezbase`).
 2. **Read the changelog before upgrading**: https://raw.githubusercontent.com/ezwrld/ezbase/master/CHANGELOG.md — every release has an **Upgrade considerations** section.
-3. **The versioning promise**: minor releases (`1.0` → `1.1`) never break — pull the new image and restart. **A major-version jump (`1.x` → `2.0`) means breaking changes**: stop and read that entry's **⚠ BREAKING** section before upgrading, and surface it to a human if the migration touches their data or config.
-4. **Pinning**: use a pinned tag (`ghcr.io/ezwrld/ezbase:1.0`) to control when upgrades happen; `:latest` tracks the newest release. Take a backup before any major upgrade: `ez backup` (or `POST /api/backups`).
+3. **Version sequence**: image releases advance the right-hand number (`1.8` → `1.9` → `1.10`). This is a simple release sequence, not semantic major/minor signaling; read every intervening entry's **Upgrade considerations**.
+4. **Pinning**: use a pinned tag (`ghcr.io/ezwrld/ezbase:1.9`) to control when upgrades happen; `:latest` tracks the newest release. Take a backup before upgrades that affect persisted behavior: `ez backup` (or `POST /api/backups`).
 5. After a **new ezbase release**, the GitHub Release / CHANGELOG **Agent prompt** is what to paste into the consuming repo (Aura, etc.). Pin the new image tag, confirm `GET /api/health` matches, keep the SDK version the changelog names.
 
 ## Shipping an ezbase release (this repo)
 
 For agents working **on ezbase**, not in an app that uses it:
 
-1. Put the next version in `CHANGELOG.md` as `## vX.Y — date` **before merge**. `X.Y` is the current image tag plus one minor (`v1.7` after `v1.6`). The heading must match exactly — the workflow copies that section into the GitHub Release.
+1. Put the next version in `CHANGELOG.md` as `## vX.Y — date` **before merge**. Increment the right-hand integer (`1.9` → `1.10`) for every release; do not choose a semantic major version. The heading must match exactly — the workflow copies that section into the GitHub Release.
 2. Include **Upgrade considerations** and an **Agent prompt** (pin image, health check, SDK pin, behavior apps must change). That is how existing users stay current: they tell their app agent “update ezbase.”
 3. Merge to `master`. `server/**` / `console/**` / `nginx/**` / `docker/**` / `Dockerfile` → image workflow bumps minor, pushes GHCR, tags `vX.Y`. `sdk/**` → npm. Docs-only changes do **not** publish.
 4. Wait until the workflow is green and https://github.com/ezwrld/ezbase/releases/tag/vX.Y exists. Do not tell apps to upgrade on a still-building image. `/api/health` on the new container must report `X.Y`, not `"dev"`.
@@ -854,7 +883,7 @@ For agents working **on ezbase**, not in an app that uses it:
 | `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | SMTP details. Port default 587 (465 = implicit TLS). |
 | `EZBASE_REQUIRE_EMAIL_VERIFICATION` | No | `true` = users must verify email before signing in. Needs SMTP. |
 | `EZBASE_RATE_LIMIT` | No | Auth brute-force limiting (3 attempts/10s per IP on sign-in/sign-up/change-password). **Always on**; `false` disables — only for test stacks that hammer auth endpoints. |
-| `EZBASE_AUTO_INDEX` | No | `false` disables automatic btree indexes for JSON `where`/`orderBy` fields (keeps GIN `@>` equality). Default is on — first query of a new shape may wait while the index builds. |
+| `EZBASE_AUTO_INDEX` | No | `false` disables automatic btree indexes for JSON `where`/`orderBy` fields. Default is on, but only admin queries create them; warm real query shapes with an admin client after deploy. |
 | `EZBASE_GIN_EXCLUDE` | No | Comma-separated collections that skip the full-document GIN index (write-heavy/fat docs). Field btrees still apply. |
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |

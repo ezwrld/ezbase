@@ -35,6 +35,11 @@ export function autoIndexEnabled(): boolean {
   return process.env.EZBASE_AUTO_INDEX !== 'false'
 }
 
+/** Never let an untrusted query choose which persistent indexes get created. */
+export function shouldEnsureQueryIndexes(isAdmin: boolean): boolean {
+  return isAdmin && autoIndexEnabled()
+}
+
 function timestampColumn(field: string): 'created_at' | 'updated_at' | null {
   if (field === 'created') return 'created_at'
   if (field === 'updated') return 'updated_at'
@@ -253,7 +258,7 @@ export async function prepareQuery(
   isAdmin = false
 ): Promise<{ query: string; params: unknown[] }> {
   const useJsonb = autoIndexEnabled()
-  if (useJsonb) {
+  if (shouldEnsureQueryIndexes(isAdmin)) {
     const hints = collectIndexHints(parseWhere(whereParam), orderBy, docFilters)
     await ensureQueryIndexes(database, collection, hints)
   }

@@ -26,7 +26,7 @@ the repository rule is what prevents a failing or unchecked PR from merging.
 **Trigger:** Any push to `master` that changes files in `sdk/`.
 
 **What it does:**
-1. Uses the unpublished `sdk/package.json` version, or bumps its minor version when that version already exists on npm
+1. Uses the unpublished `sdk/package.json` version, or increments its middle component when that version already exists on npm
 2. Builds the SDK (`tsc`)
 3. Publishes to npm as `@ezwrld/ezbase` using OIDC trusted publishing (no token needed)
 4. Commits the version bump back to master
@@ -53,7 +53,7 @@ This is configured at npmjs.com → `@ezwrld/ezbase` → Settings → Trusted Pu
 **Trigger:** Any push to `master` that changes files in `server/`, `console/`, `nginx/`, `docker/`, or `Dockerfile`.
 
 **What it does:**
-1. Determines next version by finding the latest `v*` tag and bumping **minor** (`1.6` → `1.7`)
+1. Determines the next version by finding the latest `v*` tag and incrementing the right-hand integer (`1.9` → `1.10`)
 2. Builds the all-in-one Docker image from the root `Dockerfile`
 3. Pushes to GitHub Container Registry as `ghcr.io/ezwrld/ezbase:X.Y` + `:latest`
 4. Tags `vX.Y` and pushes the tag
@@ -78,7 +78,7 @@ All managed by supervisord, exposed on port 7003, data at `/data`.
 | `sdk-v1.5.0` | SDK version published to npm |
 | `v1.8` | Docker image version pushed to GHCR |
 
-SDK and image versions are independent. Both auto-increment the minor version on every qualifying merge.
+SDK and image versions are independent. Image tags use a sequential two-part release number; npm requires the SDK's three-part version.
 
 ---
 
@@ -86,7 +86,7 @@ SDK and image versions are independent. Both auto-increment the minor version on
 
 Open a pull request to `master` and wait for the required `Release gate` check. After it passes and the PR merges, SDK changes publish the SDK and server/console/docker changes publish the image. If both changed, both publishing workflows run.
 
-**Changelog is the user-facing contract.** The PR must include `## vX.Y` matching the version that will be tagged (current latest image tag + one minor). The image workflow copies that section into the GitHub Release. Include **Upgrade considerations** and an **Agent prompt** (pin `ghcr.io/ezwrld/ezbase:X.Y`, `GET /api/health`, SDK version). Do not tell consuming apps to upgrade until the publish workflow is green.
+**Changelog is the user-facing contract.** The PR must include `## vX.Y` matching the version that will be tagged (increment the current image tag's right-hand integer). The image workflow copies that section into the GitHub Release. Include **Upgrade considerations** and an **Agent prompt** (pin `ghcr.io/ezwrld/ezbase:X.Y`, `GET /api/health`, SDK version). Do not tell consuming apps to upgrade until the publish workflow is green.
 
 No manual tagging. No release scripts. No tokens to rotate.
 

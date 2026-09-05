@@ -2,11 +2,12 @@ import type { Context } from 'hono'
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { keepAlive } from './sse.js'
-import { sql, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
+import { sql, collectionExists, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
 import { generateId } from './id.js'
 import { parseFields, prepareQuery } from './query.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { canReadCollection, requirePermission } from './middleware.js'
+import { hasExplicitCollectionRule } from './rules.js'
 import type { AppliedFilter } from './rules.js'
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -110,6 +111,12 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
   const perm = requirePermission(getDatabase)
 
+  async function mayCreateCollection(c: Context, database: string, collection: string) {
+    if ((c.get('role') || 'anonymous') === 'admin') return true
+    if (await collectionExists(database, collection)) return true
+    return hasExplicitCollectionRule(collection)
+  }
+
   // Permission middleware — GET = read, everything else = write
   app.use('/collections/:collection', async (c, next) => {
     const action = c.req.method === 'GET' ? 'read' : 'write'
@@ -126,11 +133,14 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const id = c.req.param('id')
     const database = getDatabase(c)
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
-    await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
 
     return streamSSE(c, async (stream) => {
       const sendSnapshot = async () => {
+        if (!(await collectionExists(database, collection))) {
+          await stream.writeSSE({ event: 'snapshot', data: 'null' })
+          return
+        }
         const rows = await sql`
           SELECT * FROM ${table} WHERE id = ${id}
         `
@@ -162,8 +172,6 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
   app.get('/collections/:collection/sse', async (c) => {
     const collection = c.req.param('collection')
     const database = getDatabase(c)
-    await ensureCollection(database, collection)
-
     const whereParam = c.req.query('where')
     const orderBy = c.req.query('orderBy')
     const order = c.req.query('order')
@@ -179,6 +187,10 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
     return streamSSE(c, async (stream) => {
       const sendSnapshot = async () => {
+        if (!(await collectionExists(database, collection))) {
+          await stream.writeSSE({ event: 'snapshot', data: '[]' })
+          return
+        }
         const { query, params } = await prepareQuery(
           database,
           collection,
@@ -223,7 +235,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
     const collection = c.req.param('collection')
     const database = getDatabase(c)
-    await ensureCollection(database, collection)
+    if (!(await collectionExists(database, collection))) {
+      return c.json({ error: 'Collection not found' }, 404)
+    }
     const table = qualifiedTable(database, collection)
 
     const rows = await sql`
@@ -252,6 +266,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
   app.post('/collections/:collection', async (c) => {
     const collection = c.req.param('collection')
     const database = getDatabase(c)
+    if (!(await mayCreateCollection(c, database, collection))) {
+      return c.json({ error: 'Collection must have an explicit rule before a client can create it' }, 403)
+    }
     await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
 
@@ -282,7 +299,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
   app.get('/collections/:collection', async (c) => {
     const collection = c.req.param('collection')
     const database = getDatabase(c)
-    await ensureCollection(database, collection)
+    if (!(await collectionExists(database, collection))) return c.json([])
 
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
     let query: string
@@ -311,7 +328,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const collection = c.req.param('collection')
     const id = c.req.param('id')
     const database = getDatabase(c)
-    await ensureCollection(database, collection)
+    if (!(await collectionExists(database, collection))) {
+      return c.json({ error: 'Document not found' }, 404)
+    }
     const table = qualifiedTable(database, collection)
 
     const rows = await sql`
@@ -337,6 +356,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const collection = c.req.param('collection')
     const id = c.req.param('id')
     const database = getDatabase(c)
+    if (!(await mayCreateCollection(c, database, collection))) {
+      return c.json({ error: 'Collection must have an explicit rule before a client can create it' }, 403)
+    }
     await ensureCollection(database, collection)
     const table = qualifiedTable(database, collection)
 
@@ -382,7 +404,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const collection = c.req.param('collection')
     const id = c.req.param('id')
     const database = getDatabase(c)
-    await ensureCollection(database, collection)
+    if (!(await collectionExists(database, collection))) {
+      return c.json({ error: 'Document not found' }, 404)
+    }
     const table = qualifiedTable(database, collection)
 
     // Filter check before update
@@ -448,7 +472,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const collection = c.req.param('collection')
     const id = c.req.param('id')
     const database = getDatabase(c)
-    await ensureCollection(database, collection)
+    if (!(await collectionExists(database, collection))) {
+      return c.json({ error: 'Document not found' }, 404)
+    }
     const table = qualifiedTable(database, collection)
 
     // Filter check before delete

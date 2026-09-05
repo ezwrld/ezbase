@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Exact version to release (e.g. 1.0). Empty = auto-bump minor from latest tag.'
+        description: 'Exact version to release (e.g. 1.10). Empty = increment the right-hand number from the latest tag.'
         required: false
 
 jobs:
@@ -29,9 +29,9 @@ jobs:
       - name: Determine next version
         id: version
         run: |
-          # Manual dispatch with an explicit version wins (e.g. "1.0" for a major
-          # launch). Otherwise major.minor auto-bump: find the latest v* tag (old
-          # three-part tags are read fine — the patch digit is ignored), bump minor.
+          # Manual dispatch with an explicit version wins. Otherwise find the latest
+          # v* tag and increment its right-hand number (1.9 → 1.10). Old three-part
+          # tags are read fine; their third component is ignored.
           if [ -n "${{ github.event.inputs.version }}" ]; then
             NEXT="${{ github.event.inputs.version }}"
           else

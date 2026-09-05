@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
+import type { Context, Next } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
-import { init, migrateToSchemas, validateDatabaseName } from './db.js'
+import { databaseExists, init, migrateToSchemas, validateDatabaseName } from './db.js'
 import { initPubSub } from './pubsub.js'
 import { initConfig, getPublicUrl } from './config.js'
 import { extractAuth } from './middleware.js'
@@ -24,19 +25,21 @@ app.use('*', analyticsMiddleware())
 // Auth routes
 app.route('/api/auth', auth)
 
-// Database name validation for /api/db/:database routes
-app.use('/api/db/:database/*', async (c, next) => {
-  const database = c.req.param('database')
+// Named databases are created by an admin's first write. Other callers may use
+// an existing database, but cannot manufacture schemas by guessing names.
+async function guardNamedDatabase(c: Context, next: Next) {
+  const database = c.req.param('database')!
   const err = validateDatabaseName(database)
   if (err) return c.json({ error: err }, 400)
+  const role = c.get('role') || 'anonymous'
+  if (role !== 'admin' && !(await databaseExists(database))) {
+    return c.json({ error: 'Database not found' }, 404)
+  }
   return next()
-})
-app.use('/api/db/:database', async (c, next) => {
-  const database = c.req.param('database')
-  const err = validateDatabaseName(database)
-  if (err) return c.json({ error: err }, 400)
-  return next()
-})
+}
+
+app.use('/api/db/:database/*', guardNamedDatabase)
+app.use('/api/db/:database', guardNamedDatabase)
 
 // Storage routes (file uploads/downloads)
 app.route('/api', storageRoutes)
