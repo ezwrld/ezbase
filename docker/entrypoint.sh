@@ -25,8 +25,8 @@ mkdir -p /data/files
 
 # ---------- Rules file ----------
 if [ ! -f /data/rules.json ]; then
-    echo '{ "default": "public" }' > /data/rules.json
-    echo "ezbase: created default rules.json"
+    echo '{ "default": "admin" }' > /data/rules.json
+    echo "ezbase: created default rules.json (deny by default; configure collections before client access)"
 fi
 
 # ---------- Start everything ----------

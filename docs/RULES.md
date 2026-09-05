@@ -8,7 +8,7 @@ If you know Firebase security rules: it's the same idea, but instead of a little
 
 ```json
 {
-  "default": { "read": "public", "write": "authenticated" },
+  "default": "admin",
   "collections": {
     "feed":     { "read": "public", "write": "authenticated" },
     "notes":    "owner",
@@ -22,16 +22,21 @@ If you know Firebase security rules: it's the same idea, but instead of a little
 }
 ```
 
-- `default` — what applies to any collection/bucket not listed. Fresh instances get `{ "read": "public", "write": "authenticated" }`: anyone can read, writes need a signed-in user or the admin key.
+- `default` — what applies to any collection/bucket not listed. Fresh instances use `"admin"`: unconfigured names are closed to clients for both reads and writes.
 - Every rule is either a single level (applies to read *and* write) or `{ "read": ..., "write": ... }`. Write covers create, update, and delete.
 - The **admin key bypasses everything** (like the Firebase Admin SDK). Keep it server-side.
+- Configure a collection or bucket before using it from a browser. A collection is created on its first permitted write; a read of a missing collection returns an empty result without creating a table.
+
+Rules are an access whitelist, not a database schema. Listing `"todos": "authenticated"` does not create a table or define fields. It only says signed-in clients may use that name; the first permitted `add()` or `set()` creates the collection automatically and accepts whatever JSON shape the app writes. Adding a new server-only collection requires no rule at all when the server uses the admin SDK.
+
+This distinction prevents resource exhaustion without giving up the Firebase-style workflow. With `"default": "authenticated"`, one account could write to thousands of invented names and force Postgres to create thousands of tables. With `"default": "admin"` plus exact collection entries, that account can create the handful of collections the app intentionally exposed—and nothing else.
 
 ## The canonical example: a user dashboard
 
 You auth users, they see a dashboard with *their* API keys. This is the whole setup:
 
 ```json
-{ "collections": { "api_keys": "owner" } }
+{ "default": "admin", "collections": { "api_keys": "owner" } }
 ```
 
 ```typescript
@@ -191,6 +196,8 @@ Rule of thumb: pass the user's token through and let rules do the work; reach fo
 ## How enforcement works
 
 Every request carries a bearer token → the server resolves the user's id, role, and claims → looks up the collection's rule. The access level is the door; the filter is a `WHERE` clause bolted onto the query (reads) or a field check/auto-fill (writes). Collections starting with `_ezbase_` are internal and never accessible through the API. Rules apply across all databases in the instance — collection names are matched instance-wide.
+
+Reads never create database objects. A permitted `POST`/`PUT` creates a missing collection, but a non-admin first write requires an explicit entry for that collection name rather than only the fallback rule. Only an admin write can create a named database; after that, configured client rules work normally inside it. Automatic query indexes are likewise created only while an admin runs a query, so warm important query shapes during deployment rather than letting public query parameters drive DDL.
 
 ## Editing rules
 

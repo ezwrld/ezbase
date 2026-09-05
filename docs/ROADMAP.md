@@ -28,7 +28,7 @@ Real use case: a moving company app has shared data (users, global config) and c
 
 ### How it works
 
-Databases auto-create on first write. Each database is a Postgres schema (`db_<name>`). Collections within each schema: `db_<name>.col_<col>`. Auth stays in the `public` schema, shared across all databases.
+Named databases are created on an admin's first write. Each database is a Postgres schema (`db_<name>`). Collections within each schema: `db_<name>.col_<col>`. Auth stays in the `public` schema, shared across all databases.
 
 API: legacy `/api/collections/...` routes target `default` database. Named database routes at `/api/db/:database/collections/...`. SDK: `ez.database('auburn').collection('orders')`. `ez.collection('x')` is sugar for `ez.database('default').collection('x')`.
 
@@ -43,7 +43,7 @@ await ez.getPermission('todos')
 await ez.listDatabases()
 await ez.listCollections()
 await ez.getRules()
-await ez.setRules({ default: 'public', collections: { ... } })
+await ez.setRules({ default: 'admin', collections: { todos: 'authenticated', ... } })
 ```
 
 ## 4. Declarative Rules — rules.json (done)

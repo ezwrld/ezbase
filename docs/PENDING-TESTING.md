@@ -6,18 +6,18 @@ Features built across recent sessions that need end-to-end testing before the ne
 
 ## 1. Multi-Database Support
 
-Multiple isolated databases per instance, each a Postgres schema (`db_*`), auto-created on first write. Auth shared across all databases.
+Multiple isolated databases per instance, each a Postgres schema (`db_*`), created on an admin's first write. Auth shared across all databases.
 
 ### What to test
 
 - [ ] Create docs in `default` db via `/api/collections/:col` — works as before
-- [ ] Create docs in named db via `/api/db/:database/collections/:col` — schema auto-created
+- [ ] Admin creates docs in named db via `/api/db/:database/collections/:col` — schema auto-created; non-admin gets 404 for a missing database
 - [ ] `GET /api/databases` returns list including `default` and any created databases
 - [ ] Collections in different databases are fully isolated (same collection name, different data)
 - [ ] `DELETE /api/db/:database` drops schema (admin only, cannot delete `default`)
 - [ ] SSE subscriptions are database-scoped (events in `auburn` don't fire callbacks in `oxford`)
 - [ ] Console database selector dropdown works — switching databases shows different collections
-- [ ] SDK: `ez.database('auburn').collection('orders').add(...)` creates schema + table
+- [ ] Admin SDK: `ez.database('auburn').collection('orders').add(...)` creates schema + table; a user-token SDK cannot create a missing named database
 - [ ] SDK: `ez.listDatabases()` returns all databases
 - [ ] SDK: `ez.database('auburn').listCollections()` returns only that db's collections
 - [ ] Database name validation: rejects invalid names (`_ezbase_foo`, `public`, names with special chars)
@@ -76,7 +76,7 @@ Single `rules.json` file replaces the per-database `_ezbase_config` Postgres tab
 ### What to test
 
 #### Rules loading & management
-- [ ] Fresh start: `/data/rules.json` created with `{ "default": "public" }`
+- [ ] Fresh start: `/data/rules.json` created with `{ "default": "admin" }`
 - [ ] `GET /api/rules` (admin) returns `{ rules: {...}, readonly: false }`
 - [ ] `PUT /api/rules` replaces entire rules file
 - [ ] `PUT /api/rules/collections/:col` updates a single collection rule
@@ -151,7 +151,7 @@ curl http://localhost:7003/api/health
 
 # 3. Verify default rules
 curl -H "Authorization: Bearer $ADMIN_KEY" http://localhost:7003/api/rules
-# → { "rules": { "default": "public" }, "readonly": false }
+# → { "rules": { "default": "admin" }, "readonly": false }
 
 # 4. Set up rules with claim filter
 curl -X PUT -H "Authorization: Bearer $ADMIN_KEY" \

@@ -4,12 +4,44 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 
 **The versioning promise:**
 
-- Versions are `major.minor` (image tags `v1.0`, `v1.1`; npm shows `1.0.0`, `1.1.0`).
-- **Minor releases never break you.** New features, fixes, and additive API surface only. Upgrading is: pull the new image, restart.
-- **Breaking changes only ever land in a new major**, and the entry carries a **⚠ BREAKING** section describing exactly what breaks and how to migrate. If you see a major-version jump, read that section before upgrading.
+- Image releases use a simple two-part sequence: `v1.8`, `v1.9`, `v1.10`, `v1.11`, and so on. The right-hand number increments for every release; it is not semantic versioning.
+- npm still requires three parts, so matching SDK versions use a trailing `.0` when applicable.
+- Compatibility or behavior changes are called out in that release's **Upgrade considerations** instead of being encoded in the version number.
 - Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
 Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:latest` tracks the newest release.
+
+---
+
+## v1.9 — 2026-09-05
+
+Secure-by-default lazy collection creation.
+
+### Changed
+- **Fresh instances deny by default.** New `/data/rules.json` files contain `{ "default": "admin" }`. Rules whitelist client-visible names but do not define tables or fields.
+- The first permitted `POST`/`PUT` still creates a collection automatically. Reads, subscriptions, PATCH, DELETE, and stats requests never create missing tables.
+- A non-admin first write requires an explicit collection rule, even if the fallback permits writes.
+- Only an admin write may create a named database, and only admin queries may create automatic JSON field/composite indexes.
+
+### Fixed
+- The all-in-one image no longer overwrites the server's secure default with the legacy `{ "default": "public" }` on first boot.
+- Anonymous or ordinary authenticated callers can no longer manufacture unbounded schemas, tables, and indexes through guessed route/query names.
+
+### Upgrade considerations
+- Existing `/data/rules.json` files are preserved. Audit them manually; upgrading does not replace an existing public/authenticated fallback. Keep `default: "admin"` and add exact entries for client-visible collections and buckets.
+- Collection auto-creation remains. If a user client relied on a broad fallback to create a previously unseen collection, add an explicit rule for that name; do not pre-create its table.
+- If a user client created named databases, seed each database once with an admin write. User writes continue normally after the database exists.
+- Reading a missing collection now returns empty/null without creating it. Run important query shapes once through an admin client to warm automatic indexes.
+
+### Agent prompt
+```
+Update this project to ezbase 1.9 after the image is published.
+
+1. Back up the instance and pin ghcr.io/ezwrld/ezbase:1.9. GET {ezbase}/api/health must report "1.9".
+2. Audit rules.json: keep default "admin" and explicitly list client-visible collections/buckets. These rules are only an access whitelist; permitted writes still create collection tables automatically.
+3. If user clients previously created named databases, seed each with one admin-key write.
+4. Warm important where/orderBy shapes with an admin client so their automatic indexes exist.
+```
 
 ---
 

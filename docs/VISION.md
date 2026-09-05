@@ -20,7 +20,7 @@ No migration files. Ever. No `ALTER TABLE`. No ORM. Change your interface, and E
 
 ### Zero config, zero ceremony
 
-Create a project. Start writing documents. That's it. No table definitions, no schema setup, no connection string wrangling. Collections are created implicitly on first write. The console gives you visibility. The SDK gives you types. The database just works.
+Create a project, explicitly choose which collections clients may access, and start writing documents. No table definitions, migrations, or connection-string wrangling. Collections are created implicitly on the first permitted write. The console gives you visibility. The SDK gives you types. The database just works.
 
 ### Self-hosted, self-owned
 
@@ -50,11 +50,11 @@ If the runtime landscape shifts (Node → Bun, etc.), the Hono code migrates unc
 
 ### Why Postgres?
 
-Postgres is just the storage engine. You never interact with it directly. No SQL, no migrations, no ORM. Under the hood, each collection gets its own table, created automatically on first write. Postgres LISTEN/NOTIFY powers the realtime layer. You get the reliability of a 30-year-old database with the DX of a document store.
+Postgres is just the storage engine. You never interact with it directly. No SQL, no migrations, no ORM. Under the hood, each collection gets its own table, created automatically on its first permitted write. Reads never create database objects. Postgres LISTEN/NOTIFY powers the realtime layer. You get the reliability of a 30-year-old database with the DX of a document store.
 
 ### Table structure (per collection)
 
-When you first write to `db.collection('bookings')`, EZBase automatically creates:
+When an allowed caller first writes to `db.collection('bookings')`, EZBase automatically creates:
 
 ```sql
 CREATE TABLE IF NOT EXISTS col_bookings (
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_bookings_data ON col_bookings USING GIN (data);
 CREATE INDEX IF NOT EXISTS idx_bookings_created ON col_bookings (created_at);
 ```
 
-You never see this SQL. The API handles table creation, GIN indexing, and cache invalidation internally. The `col_` prefix avoids collisions with Postgres system tables and BetterAuth's tables. The developer just calls `.collection('whatever')` and it works.
+You never see this SQL. The API handles table creation, GIN indexing, and cache invalidation internally. The `col_` prefix avoids collisions with Postgres system tables and BetterAuth's tables. Configure the collection rule once, then `.collection('whatever')` works without schema setup.
 
 **Why one table per collection (not one mega-table)?** GIN indexes scale with table size. If bookings and analytics events share a table, every query pays the cost of indexing both. Separate tables mean each index is scoped to its collection. Postgres also maintains vacuuming, autovacuum tuning, and table statistics per table — one mega-table means hot collections pollute the maintenance of cold ones.
 

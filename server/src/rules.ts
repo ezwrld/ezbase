@@ -46,9 +46,9 @@ export interface AppliedFilter {
 
 const RULES_PATH = process.env.RULES_PATH || '/data/rules.json'
 
-// Secure default for fresh instances: anyone can read, writes need a signed-in
-// user (or the admin key). Set `"default": "public"` in rules.json to open writes.
-const DEFAULT_RULES: RulesFile = { default: { read: 'public', write: 'authenticated' } }
+// Fresh instances are closed until the operator explicitly configures each
+// browser-visible collection and bucket. The admin key still bypasses rules.
+export const DEFAULT_RULES: RulesFile = { default: 'admin' }
 
 let currentRules: RulesFile = DEFAULT_RULES
 let readonly = false
@@ -58,7 +58,7 @@ function warnIfPublicWrites(rules: RulesFile) {
   const write = typeof def === 'string' ? def : def.write ?? 'public'
   if (write === 'public') {
     console.warn(
-      'ezbase: WARNING — default write access is "public": anyone can create, modify, and delete documents in collections without explicit rules. Set {"default":{"read":"public","write":"authenticated"}} in rules.json unless this is intentional.'
+      'ezbase: WARNING — default write access is "public": anyone can modify and delete documents in existing unlisted collections. Keep {"default":"admin"} and add explicit collection rules unless this is intentional.'
     )
   }
 }
@@ -165,7 +165,7 @@ export async function loadRules() {
     if (!fs.existsSync(RULES_PATH)) {
       try {
         fs.writeFileSync(RULES_PATH, JSON.stringify(DEFAULT_RULES, null, 2) + '\n')
-        console.log('ezbase: created default rules.json (public read, authenticated write)')
+        console.log('ezbase: created default rules.json (deny by default; configure collections before client access)')
       } catch (err: any) {
         if (err.code === 'EROFS' || err.code === 'EACCES') {
           readonly = true
@@ -225,6 +225,11 @@ export function watchRules() {
 
 export function getRules(): RulesFile {
   return currentRules
+}
+
+/** Whether a collection name is intentionally exposed rather than using the fallback. */
+export function hasExplicitCollectionRule(collection: string): boolean {
+  return Object.prototype.hasOwnProperty.call(currentRules.collections ?? {}, collection)
 }
 
 export function isRulesReadonly(): boolean {

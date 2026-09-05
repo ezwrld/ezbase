@@ -90,6 +90,41 @@ export function validateDatabaseName(name: string): string | null {
   return null
 }
 
+/** Check for a database schema without creating it. Positive results are cached. */
+export async function databaseExists(name: string): Promise<boolean> {
+  const err = validateDatabaseName(name)
+  if (err) throw new Error(err)
+  if (ensuredDatabases.has(name)) return true
+
+  const rows = await sql`
+    SELECT 1 FROM information_schema.schemata
+    WHERE schema_name = ${`db_${name}`}
+    LIMIT 1
+  `
+  if (rows.length > 0) ensuredDatabases.add(name)
+  return rows.length > 0
+}
+
+/** Check for a collection table without creating it. Positive results are cached. */
+export async function collectionExists(database: string, name: string): Promise<boolean> {
+  const err = validateDatabaseName(database) || validateCollectionName(name)
+  if (err) throw new Error(err)
+
+  const cacheKey = `${database}:${name}`
+  if (ensured.has(cacheKey)) return true
+
+  const rows = await sql`
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = ${`db_${database}`} AND table_name = ${`col_${name}`}
+    LIMIT 1
+  `
+  if (rows.length > 0) {
+    ensuredDatabases.add(database)
+    ensured.add(cacheKey)
+  }
+  return rows.length > 0
+}
+
 // ── Qualified table helpers ─────────────────────────────────
 export function qualifiedTable(database: string, collection: string) {
   return sql(`db_${database}.col_${collection}`)
