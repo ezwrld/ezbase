@@ -191,7 +191,7 @@ Permission levels: `public`, `authenticated`, `admin`, `owner` (sugar for `{ acc
 ## Releasing
 
 Automatic on merge to master, using a simple two-part release sequence (`1.8` → `1.9` → `1.10`). GitHub Actions detect what changed:
-- `sdk/**` changed → increments the SDK's middle component, publishes to npm as `@ezwrld/ezbase`, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0)
+- `sdk/**` changed → increments the middle component of npm's latest `@ezwrld/ezbase`, publishes it, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0). The bump is not committed back (master is protected), so `sdk/package.json` can trail npm.
 - `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → increments the image tag's right-hand number, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.Y`
 
 **Every release PR must add a `CHANGELOG.md` entry** — `## vX.Y — date` matching the version the workflow will mint (increment the right-hand integer: `1.9` → `1.10`). Required sections: **Upgrade considerations** ("None." if none) and **Agent prompt** (copy-paste for consuming apps: pin the new image, health check, SDK pin, anything they must change). Compatibility changes are explained there; they do not change the two-part numbering scheme.
@@ -202,4 +202,4 @@ The image workflow (`publish-image.yml`) increments the right-hand version numbe
 
 Controlling versions explicitly:
 - **Image**: run the "Publish Docker image" workflow manually (workflow_dispatch) with an exact `version` input (e.g. `1.0`) — it builds, tags `v1.0`, and future merges auto-bump from there.
-- **SDK**: `sdk/package.json` is authoritative — set it to any unpublished version and the workflow publishes it as-is; otherwise it auto-bumps minor.
+- **SDK**: set `sdk/package.json` to any unpublished version and the workflow publishes it as-is; otherwise it bumps minor from npm's latest.
