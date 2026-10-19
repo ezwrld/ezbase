@@ -125,7 +125,37 @@ const results = await ez.collection('todos')
   .get()
 ```
 
-Supported operators: `==`, `!=`, `<`, `>`, `<=`, `>=`
+Supported operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`
+
+Fields can be dotted paths into nested objects (`'stats.rushingYards'`).
+
+`in` takes an array, or another query on the same database — its documents'
+ids (or its single selected field) are matched, inside one SQL statement:
+
+```ts
+const lines = await ez.collection('player_game_stats')
+  .where('gameId', 'in', ez.collection('games').where('season', '==', 2026))
+  .get()
+```
+
+### Aggregation
+
+```ts
+const leaders = await ez.collection('player_game_stats')
+  .where('gameId', 'in', ez.collection('games').where('season', '==', 2026))
+  .aggregate({
+    groupBy: ['playerId'],
+    select: { games: ['count'], yards: ['sum', 'stats.rushingYards'] },
+    having: [['games', '>=', 3]],
+    orderBy: 'yards',
+    order: 'desc',
+    limit: 10,
+  })
+// → [{ playerId: '…', games: 7, yards: 837 }, …]
+```
+
+Functions: `count`, `countDistinct`, `sum`, `avg`, `min`, `max`. Numeric
+functions read JSON numbers and skip anything else.
 
 You can filter on `created` and `updated` timestamps directly:
 

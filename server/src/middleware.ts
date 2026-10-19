@@ -1,7 +1,7 @@
 import type { Context, Next } from 'hono'
 import { getAdminKey } from './config.js'
 import { ba } from './auth.js'
-import { getRuleForCollection, resolveFilters } from './rules.js'
+import { getRuleForCollection, resolveFilters, type AppliedFilter } from './rules.js'
 
 // ── extractAuth — runs on ALL requests, never rejects ───────
 export async function extractAuth(c: Context, next: Next) {
@@ -44,49 +44,60 @@ export async function extractAuth(c: Context, next: Next) {
   return next()
 }
 
+export type CollectionAccess =
+  | { ok: true; filters?: AppliedFilter[] }
+  | { ok: false; status: 401 | 403; error: 'Unauthorized' | 'Forbidden' }
+
+const UNAUTHORIZED = { ok: false, status: 401, error: 'Unauthorized' } as const
+const FORBIDDEN = { ok: false, status: 403, error: 'Forbidden' } as const
+
+/** Whether the caller may read/write a collection, and the doc filters its rule imposes. */
+export function checkCollectionAccess(c: Context, collection: string, action: 'read' | 'write'): CollectionAccess {
+  const role = c.get('role') || 'anonymous'
+
+  // Admin always passes
+  if (role === 'admin') return { ok: true }
+
+  // Protect internal tables
+  if (collection.startsWith('_ezbase_')) return role === 'anonymous' ? UNAUTHORIZED : FORBIDDEN
+
+  const rule = getRuleForCollection(collection, action)
+
+  // Access gate
+  if (rule.access === 'public') {
+    // pass
+  } else if (rule.access === 'authenticated') {
+    if (role === 'anonymous') return UNAUTHORIZED
+  } else if (rule.access === 'admin') {
+    return role === 'anonymous' ? UNAUTHORIZED : FORBIDDEN
+  } else if (rule.access.startsWith('role:')) {
+    if (role === 'anonymous') return UNAUTHORIZED
+    if (role !== rule.access.slice(5)) return FORBIDDEN
+  }
+
+  // Resolve filters
+  if (rule.filters.length > 0) {
+    const userId = c.get('userId') as string | undefined
+    const claims = (c.get('claims') || {}) as Record<string, unknown>
+    const applied = resolveFilters(rule, userId, claims)
+    if (applied === null) return FORBIDDEN
+    return { ok: true, filters: applied }
+  }
+
+  return { ok: true }
+}
+
 // ── requirePermission — applied to collection routes ────────
 export function requirePermission(getDatabase: (c: Context) => string) {
   return (action: 'read' | 'write') => {
     return async (c: Context, next: Next) => {
-      const role = c.get('role') || 'anonymous'
-
-      // Admin always passes
-      if (role === 'admin') return next()
-
       // Extract collection name from path
       const collection = c.req.param('collection')
       if (!collection) return next()
 
-      // Protect internal tables
-      if (collection.startsWith('_ezbase_')) {
-        if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
-        return c.json({ error: 'Forbidden' }, 403)
-      }
-
-      const rule = getRuleForCollection(collection, action)
-
-      // Access gate
-      if (rule.access === 'public') {
-        // pass
-      } else if (rule.access === 'authenticated') {
-        if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
-      } else if (rule.access === 'admin') {
-        if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
-        return c.json({ error: 'Forbidden' }, 403)
-      } else if (rule.access.startsWith('role:')) {
-        const required = rule.access.slice(5)
-        if (role === 'anonymous') return c.json({ error: 'Unauthorized' }, 401)
-        if (role !== required) return c.json({ error: 'Forbidden' }, 403)
-      }
-
-      // Resolve filters
-      if (rule.filters.length > 0) {
-        const userId = c.get('userId') as string | undefined
-        const claims = (c.get('claims') || {}) as Record<string, unknown>
-        const applied = resolveFilters(rule, userId, claims)
-        if (applied === null) return c.json({ error: 'Forbidden' }, 403)
-        c.set('docFilters', applied)
-      }
+      const access = checkCollectionAccess(c, collection, action)
+      if (!access.ok) return c.json({ error: access.error }, access.status)
+      if (access.filters) c.set('docFilters', access.filters)
 
       return next()
     }

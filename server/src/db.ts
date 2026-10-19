@@ -42,9 +42,13 @@ export function sqlIndexName(database: string, collection: string, kind: string,
   return `idx_${h}`
 }
 
-export function shouldCreateDataIndex(name: string) {
-  const excluded = (process.env.EZBASE_GIN_EXCLUDE || '').split(',').map((value) => value.trim())
-  return !excluded.includes(name)
+/**
+ * On (the default): queries compare `data->'field'` expressions that admin
+ * queries index with btrees, and collections get no GIN index — nothing would
+ * read it. Off: queries use `@>` containment against a GIN index on `data`.
+ */
+export function autoIndexEnabled(): boolean {
+  return process.env.EZBASE_AUTO_INDEX !== 'false'
 }
 
 function isDuplicateDdlError(err: unknown): boolean {
@@ -130,6 +134,18 @@ export function qualifiedTable(database: string, collection: string) {
   return sql(`db_${database}.col_${collection}`)
 }
 
+/** Table name for hand-built SQL; validates both names since they are interpolated. */
+export function qualifiedTableName(database: string, collection: string): string {
+  const err = validateDatabaseName(database) || validateCollectionName(collection)
+  if (err) throw new Error(err)
+  return `db_${database}.col_${collection}`
+}
+
+/** `data->'a'->'b'` for a sanitized dotted path; query predicates and index expressions must match exactly. */
+export function jsonPath(field: string): string {
+  return `data${field.split('.').map((part) => `->'${part}'`).join('')}`
+}
+
 // ── Database (schema) management ────────────────────────────
 export async function ensureDatabase(name: string) {
   const err = validateDatabaseName(name)
@@ -171,7 +187,7 @@ export async function ensureCollection(database: string, name: string) {
           updated_at BIGINT NOT NULL
         )
       `
-      if (shouldCreateDataIndex(name)) {
+      if (!autoIndexEnabled()) {
         await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
       }
       await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_created`)} ON ${table} (created_at)`
@@ -245,36 +261,44 @@ export function clearDatabaseCaches(database: string) {
 }
 
 function jsonExpr(field: string): string {
-  return `(data->'${field}')`
-}
-
-async function createIndexOnce(name: string, ddl: string) {
-  if (jsonIndexes.has(name)) return
-  let pending = pendingJsonIndexes.get(name)
-  if (!pending) {
-    pending = (async () => {
-      try {
-        await withDdlRetry(async () => {
-          const t0 = Date.now()
-          await sql.unsafe(ddl)
-          const ms = Date.now() - t0
-          if (ms >= 100) console.log(`  created index ${name} in ${ms}ms`)
-        })
-      } catch (err) {
-        console.error(`failed to create index ${name}:`, err)
-      } finally {
-        jsonIndexes.add(name)
-      }
-    })().finally(() => pendingJsonIndexes.delete(name))
-    pendingJsonIndexes.set(name, pending)
-  }
-  await pending
+  return `(${jsonPath(field)})`
 }
 
 /**
- * Firestore-style: btree on JSON fields the query actually uses, plus a
- * composite of equality filters + orderBy so `where status==pending orderBy
- * observedAt limit 25` is an index scan instead of GIN + sort.
+ * Builds in the background with CONCURRENTLY so a new query shape never blocks
+ * writes to a live table; the triggering query runs without waiting. ANALYZE
+ * afterwards gives the planner statistics for the new expression.
+ */
+function createIndexOnce(name: string, table: string, columns: string, partial: string) {
+  if (jsonIndexes.has(name) || pendingJsonIndexes.has(name)) return
+  const pending = (async () => {
+    try {
+      await withDdlRetry(async () => {
+        const t0 = Date.now()
+        await sql.unsafe(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${table} (${columns}) WHERE ${partial}`)
+        await sql.unsafe(`ANALYZE ${table}`)
+        const ms = Date.now() - t0
+        if (ms >= 100) console.log(`  created index ${name} in ${ms}ms`)
+      })
+    } catch (err) {
+      console.error(`failed to create index ${name}:`, err)
+      // A failed concurrent build leaves an invalid index that IF NOT EXISTS would keep forever.
+      await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`).catch(() => {})
+    } finally {
+      jsonIndexes.add(name)
+    }
+  })().finally(() => pendingJsonIndexes.delete(name))
+  pendingJsonIndexes.set(name, pending)
+}
+
+/**
+ * Firestore-style: one index per query shape. Equality filters + orderBy get a
+ * composite so `where status==pending orderBy observedAt limit 25` is an index
+ * scan instead of GIN + sort; unordered reads (aggregates, subqueries) with two
+ * or more equality filters get a composite of those. Fields the composite does
+ * not cover (ranges, `in`, a lone equality) get a single-field btree. Fields a
+ * composite covers get no single index of their own, which keeps hot tables
+ * from collecting an index per field per shape.
  */
 export async function ensureQueryIndexes(
   database: string,
@@ -287,37 +311,29 @@ export async function ensureQueryIndexes(
   await ensureCollection(database, collection)
   const table = `db_${database}.col_${collection}`
 
-  for (const field of hints.jsonFields) {
-    const name = sqlIndexName(database, collection, 'j', [field])
-    const expr = jsonExpr(field)
-    await createIndexOnce(
-      name,
-      `CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${expr}) WHERE ${expr} IS NOT NULL`
-    )
-  }
-
-  const orderField = hints.orderField
+  const covered = new Set<string>()
   const eq = hints.eqFields.slice(0, 3)
-  if (eq.length === 0 || !orderField) return
-
-  const parts = [...eq]
-  let extra = ''
-  if (orderField === 'created_at' || orderField === 'updated_at') {
-    extra = `, ${orderField}`
-  } else if (!eq.includes(orderField)) {
-    parts.push(orderField)
+  const orderField = hints.orderField
+  if (eq.length > 0) {
+    const parts = [...eq]
+    let extra = ''
+    if (orderField === 'created_at' || orderField === 'updated_at') {
+      extra = `, ${orderField}`
+    } else if (orderField && !eq.includes(orderField)) {
+      parts.push(orderField)
+    }
+    if (parts.length > 1 || extra) {
+      const name = sqlIndexName(database, collection, orderField ? 'c' : 'e', extra ? [...parts, orderField!] : parts)
+      createIndexOnce(name, table, parts.map(jsonExpr).join(', ') + extra, `${jsonExpr(eq[0])} IS NOT NULL`)
+      parts.forEach((field) => covered.add(field))
+    }
   }
-  if (parts.length === 1 && !extra) return
 
-  const name = sqlIndexName(
-    database,
-    collection,
-    'c',
-    extra ? [...parts, orderField] : parts
-  )
-  const cols = parts.map(jsonExpr).join(', ') + extra
-  const partial = eq.length > 0 ? ` WHERE ${jsonExpr(eq[0])} IS NOT NULL` : ''
-  await createIndexOnce(name, `CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${cols})${partial}`)
+  for (const field of hints.jsonFields) {
+    if (covered.has(field)) continue
+    const expr = jsonExpr(field)
+    createIndexOnce(sqlIndexName(database, collection, 'j', [field]), table, expr, `${expr} IS NOT NULL`)
+  }
 }
 
 export async function ensureTimestampIndexes() {

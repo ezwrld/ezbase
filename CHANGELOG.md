@@ -13,6 +13,40 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.10 — 2026-10-19
+
+Aggregation, `in`, and nested fields — querying that uses Postgres instead of fighting jsonb.
+
+### Added
+- **`POST /collections/:col/aggregate`** and SDK `.aggregate()`: `groupBy` (up to 8 fields), `count`, `countDistinct`, `sum`, `avg`, `min`, `max`, `having`, `orderBy` an output or group field (nulls last), `limit`/`offset`. Numeric functions read JSON numbers and skip strings/nulls. Same read rules and filters as a list; 15s statement timeout per aggregate.
+- **`in` operator**: an array of up to 10000 values, or a subquery on another collection in the same database (`where('gameId', 'in', games.where('season', '==', 2026))`) that runs inside the same statement. Subqueries need read access to their collection and apply its rule filters.
+- **Dotted paths** in `where`, `orderBy`, `groupBy`, and aggregate fields (`stats.rushingYards`, `conference.abbreviation`). Automatic indexes match nested expressions.
+
+### Changed
+- **Automatic indexes build with `CREATE INDEX CONCURRENTLY` in the background**, then `ANALYZE` the table. A new query shape no longer blocks writes to a live table while its index builds, and the triggering query no longer waits for it. A failed build drops its invalid index instead of leaving it for `IF NOT EXISTS` to skip forever; the next server start retries it.
+- **One automatic index per query shape.** Fields covered by a composite index no longer also get their own single-field index. Unordered reads (aggregates, subqueries) with two or more equality filters get an equality-only composite. Existing indexes are untouched.
+- **No GIN index on new collections while auto-indexing is on (the default).** Those queries compare `data->'field'` expressions against btrees and never used the GIN. `EZBASE_GIN_EXCLUDE` is removed. With `EZBASE_AUTO_INDEX=false`, every collection still gets its GIN for `@>` containment.
+- Unknown `where` operators return 400. They were silently treated as `==`.
+
+### Upgrade considerations
+- Clients sending an operator other than `== != < > <= >= in` now get a 400 instead of an equality match. Fix the operator.
+- `.` in a `where`/`orderBy` field now means a nested path; such fields were rejected before. `?fields=`/`.select()` stay top-level.
+- Indexes from earlier versions are left in place, including each collection's `idx_<db>_<col>_data` GIN. Every write maintains them. With auto-indexing on, review `pg_stat_user_indexes` for `idx_scan = 0` (GINs especially) and drop unused ones with `DROP INDEX CONCURRENTLY`.
+- `EZBASE_GIN_EXCLUDE` no longer does anything; remove it from your environment.
+
+### Agent prompt
+```
+Update this project to ezbase 1.10 after the image is published.
+
+1. Pin ghcr.io/ezwrld/ezbase:1.10 (and @ezwrld/ezbase SDK 1.6.0). GET {ezbase}/api/health must report "1.10".
+2. Search for where clauses using operators other than == != < > <= >= and fix them; they now return 400.
+3. Replace client-side reductions over fetched documents (sums, counts, leaderboards, group-bys) with .aggregate(), and replace fetch-ids-then-filter round trips with an `in` subquery.
+4. Run important query and aggregate shapes once with an admin client; their indexes now build concurrently in the background.
+5. Remove EZBASE_GIN_EXCLUDE from the environment. Do not drop existing indexes without the owner's approval; list `idx_scan = 0` indexes for them instead.
+```
+
+---
+
 ## v1.9 — 2026-09-05
 
 Secure-by-default lazy collection creation.
