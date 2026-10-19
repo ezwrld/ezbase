@@ -4,9 +4,19 @@ import { streamSSE } from 'hono/streaming'
 import { keepAlive } from './sse.js'
 import { sql, collectionExists, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
 import { generateId } from './id.js'
-import { parseFields, prepareQuery } from './query.js'
+import {
+  formatAggregateRow,
+  parseAggregate,
+  parseFields,
+  parseWhere,
+  prepareAggregate,
+  prepareQuery,
+  subqueryCollections,
+  type SubqueryAccess,
+  type WhereClause,
+} from './query.js'
 import { publishChange, subscribe } from './pubsub.js'
-import { canReadCollection, requirePermission } from './middleware.js'
+import { canReadCollection, checkCollectionAccess, requirePermission } from './middleware.js'
 import { hasExplicitCollectionRule } from './rules.js'
 import type { AppliedFilter } from './rules.js'
 
@@ -91,6 +101,24 @@ function docMatchesFilters(data: Record<string, unknown>, filters: AppliedFilter
   return true
 }
 
+// Aggregates scan every matching row; cap them so one cannot monopolize the database.
+const AGGREGATE_TIMEOUT_MS = 15000
+
+/** Read access for each collection an `in` subquery reads, checked like a direct read. */
+async function resolveSubqueries(
+  c: Context,
+  database: string,
+  wheres: WhereClause[]
+): Promise<{ ok: true; subqueries: SubqueryAccess } | { ok: false; response: Response }> {
+  const subqueries: SubqueryAccess = new Map()
+  for (const collection of subqueryCollections(wheres)) {
+    const access = checkCollectionAccess(c, collection, 'read')
+    if (!access.ok) return { ok: false, response: c.json({ error: access.error }, access.status) }
+    subqueries.set(collection, { exists: await collectionExists(database, collection), filters: access.filters })
+  }
+  return { ok: true, subqueries }
+}
+
 const MAX_JSON_BYTES = parseInt(process.env.EZBASE_MAX_JSON_BYTES || String(1024 * 1024), 10)
 
 async function readJsonBody(c: Context): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
@@ -117,13 +145,14 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     return hasExplicitCollectionRule(collection)
   }
 
-  // Permission middleware — GET = read, everything else = write
+  // Permission middleware — GET and aggregate = read, everything else = write
   app.use('/collections/:collection', async (c, next) => {
     const action = c.req.method === 'GET' ? 'read' : 'write'
     return perm(action)(c, next)
   })
   app.use('/collections/:collection/*', async (c, next) => {
-    const action = c.req.method === 'GET' ? 'read' : 'write'
+    const aggregate = c.req.method === 'POST' && c.req.path.endsWith('/aggregate')
+    const action = c.req.method === 'GET' || aggregate ? 'read' : 'write'
     return perm(action)(c, next)
   })
 
@@ -184,6 +213,14 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid fields' }, 400)
     }
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    let subqueries: SubqueryAccess
+    try {
+      const resolved = await resolveSubqueries(c, database, parseWhere(whereParam))
+      if (!resolved.ok) return resolved.response
+      subqueries = resolved.subqueries
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
+    }
 
     return streamSSE(c, async (stream) => {
       const sendSnapshot = async () => {
@@ -201,7 +238,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
           docFilters,
           offsetParam,
           fields,
-          (c.get('role') || 'anonymous') === 'admin'
+          (c.get('role') || 'anonymous') === 'admin',
+          subqueries
         )
         const rows = await sql.unsafe(query, params as any[])
         await stream.writeSSE({
@@ -305,7 +343,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     let query: string
     let params: unknown[]
     try {
-      ({ query, params } = await prepareQuery(
+      const resolved = await resolveSubqueries(c, database, parseWhere(c.req.query('where')))
+      if (!resolved.ok) return resolved.response
+      ;({ query, params } = await prepareQuery(
         database,
         collection,
         c.req.query('where'),
@@ -315,13 +355,55 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         docFilters,
         c.req.query('offset'),
         parseFields(c.req.query('fields')),
-        (c.get('role') || 'anonymous') === 'admin'
+        (c.get('role') || 'anonymous') === 'admin',
+        resolved.subqueries
       ))
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
     }
     const rows = await sql.unsafe(query, params as any[])
     return c.json(rows.map(formatDoc))
+  })
+
+  app.post('/collections/:collection/aggregate', async (c) => {
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    const parsed = await readJsonBody(c)
+    if (!parsed.ok) return parsed.response
+    if (!(await collectionExists(database, collection))) return c.json([])
+
+    const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    let query: string
+    let params: unknown[]
+    let groupBy: string[]
+    try {
+      const req = parseAggregate(parsed.body)
+      groupBy = req.groupBy ?? []
+      const resolved = await resolveSubqueries(c, database, req.where ?? [])
+      if (!resolved.ok) return resolved.response
+      ;({ query, params } = await prepareAggregate(
+        database,
+        collection,
+        req,
+        docFilters,
+        (c.get('role') || 'anonymous') === 'admin',
+        resolved.subqueries
+      ))
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid aggregate' }, 400)
+    }
+    try {
+      const rows = await sql.begin(async (tx) => {
+        await tx.unsafe(`SET LOCAL statement_timeout = ${AGGREGATE_TIMEOUT_MS}`)
+        return tx.unsafe(query, params as any[])
+      })
+      return c.json(rows.map((row) => formatAggregateRow(row, groupBy)))
+    } catch (error) {
+      if ((error as { code?: string }).code === '57014') {
+        return c.json({ error: `Aggregate exceeded ${AGGREGATE_TIMEOUT_MS / 1000}s; narrow the where clause` }, 400)
+      }
+      throw error
+    }
   })
 
   app.get('/collections/:collection/:id', async (c) => {

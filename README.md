@@ -2,7 +2,7 @@
 
 Self-hosted backend in a single Docker container: a NoSQL document store on Postgres, plus auth, per-collection access rules, file storage, realtime subscriptions, backups, request analytics, and an admin console. TypeScript SDK and a plain REST API.
 
-ezbase is a collection of open-source tools wired together behind one API rather than a new database engine: Postgres (JSONB + GIN indexes) handles storage and querying, [BetterAuth](https://better-auth.com) handles sessions, password hashing, and OAuth, nginx fronts the stack. One image, one port (7003), one volume (`/data`).
+ezbase is a collection of open-source tools wired together behind one API rather than a new database engine: Postgres (JSONB + automatic per-query btree indexes) handles storage and querying, [BetterAuth](https://better-auth.com) handles sessions, password hashing, and OAuth, nginx fronts the stack. One image, one port (7003), one volume (`/data`).
 
 ## Quick Start
 

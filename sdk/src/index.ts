@@ -1,6 +1,24 @@
-type WhereOp = '==' | '!=' | '<' | '>' | '<=' | '>='
+type WhereOp = '==' | '!=' | '<' | '>' | '<=' | '>=' | 'in'
 type WhereClause = [string, WhereOp, unknown]
 type OrderDir = 'asc' | 'desc'
+type CompareOp = Exclude<WhereOp, 'in'>
+
+type AggregateFn = 'count' | 'countDistinct' | 'sum' | 'avg' | 'min' | 'max'
+/** `['count']` counts rows; every other function takes a field (dotted paths allowed). */
+type AggregateSpec = [AggregateFn, string?]
+
+interface AggregateOptions<S extends Record<string, AggregateSpec>, G extends string> {
+  groupBy?: G[]
+  select: S
+  having?: [Extract<keyof S, string>, CompareOp, number][]
+  orderBy?: G | Extract<keyof S, string>
+  order?: OrderDir
+  limit?: number
+  offset?: number
+}
+
+type AggregateRow<S extends Record<string, AggregateSpec>, G extends string> =
+  { [K in G]: unknown } & { [K in keyof S]: number | null }
 
 interface Document<T = Record<string, unknown>> {
   id: string
@@ -539,6 +557,11 @@ class CollectionRef<T = Record<string, unknown>> {
     return new DocRef<T>(this.ez, this.db, this.name, id)
   }
 
+  /** @internal — an unfiltered query over this collection */
+  _query(): QueryRef<T> {
+    return new QueryRef<T>(this.ez, this.db, this.name)
+  }
+
   where(field: string, op: WhereOp, value: unknown): QueryRef<T> {
     return new QueryRef<T>(this.ez, this.db, this.name).where(field, op, value)
   }
@@ -553,6 +576,12 @@ class CollectionRef<T = Record<string, unknown>> {
 
   select<K extends Extract<keyof T, string>>(...fields: K[]): QueryRef<T, Pick<T, K>> {
     return new QueryRef<T>(this.ez, this.db, this.name).select(...fields)
+  }
+
+  aggregate<S extends Record<string, AggregateSpec>, G extends string = never>(
+    options: AggregateOptions<S, G>
+  ): Promise<AggregateRow<S, G>[]> {
+    return new QueryRef<T>(this.ez, this.db, this.name).aggregate(options)
   }
 
   async add(data: Partial<T>): Promise<Document<T>> {
@@ -707,9 +736,26 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
     private collection: string
   ) {}
 
+  /**
+   * `in` takes an array, or another query on this database whose matching doc
+   * ids (or its single selected field) the value must be one of:
+   * `where('gameId', 'in', games.where('season', '==', 2026))`.
+   */
   where(field: string, op: WhereOp, value: unknown): this {
+    if (value instanceof CollectionRef) value = value._query()
+    if (value instanceof QueryRef) {
+      if (op !== 'in') throw new Error('a query can only be the value of an in clause')
+      value = value._subquery(this.db)
+    }
     this.wheres.push([field, op, value])
     return this
+  }
+
+  /** @internal — this query as an `in` subquery */
+  _subquery(db: DatabaseRef): { collection: string; where: WhereClause[]; field: string } {
+    if (db._basePath() !== this.db._basePath()) throw new Error('an in subquery must read the same database')
+    if (this._fields && this._fields.length !== 1) throw new Error('an in subquery selects at most one field')
+    return { collection: this.collection, where: this.wheres, field: this._fields?.[0] ?? 'id' }
   }
 
   orderBy(field: string, direction: OrderDir = 'asc'): this {
@@ -752,6 +798,19 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
     return `${this.db._basePath()}/collections/${encodeURIComponent(this.collection)}`
   }
 
+  /** Group and summarize matching documents server-side. Numeric functions ignore non-number values. */
+  async aggregate<S extends Record<string, AggregateSpec>, G extends string = never>(
+    options: AggregateOptions<S, G>
+  ): Promise<AggregateRow<S, G>[]> {
+    const res = await fetch(`${this._basePath()}/aggregate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.ez._authHeaders() },
+      body: JSON.stringify({ where: this.wheres, ...options }),
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
   async get(): Promise<Document<Result>[]> {
     const url = `${this._basePath()}${this.buildParams()}`
     const res = await fetch(url, { headers: this.ez._authHeaders() })
@@ -769,5 +828,5 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
 }
 
 export { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient, StorageBucket, FileHandle }
-export type { Document, WhereOp, OrderDir, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, RuleValue, ReadWriteRule }
+export type { Document, WhereOp, OrderDir, AggregateFn, AggregateSpec, AggregateOptions, AggregateRow, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, RuleValue, ReadWriteRule }
 export default EzBase

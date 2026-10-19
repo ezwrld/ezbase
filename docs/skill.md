@@ -183,7 +183,75 @@ const titles = await ez.collection<Todo>('todos')
   .get()
 ```
 
-**Operators:** `==`, `!=`, `<`, `>`, `<=`, `>=`
+**Operators:** `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`
+
+**Nested fields:** filter, sort, group and aggregate on dotted paths into nested
+objects — `where('stats.rushingYards', '>', 100)`, `where('conference.abbreviation', '==', 'SEC')`.
+`.select()` stays top-level.
+
+**`in`** takes an array (up to 10000 values), or another query on the same
+database. A query value matches its documents' ids, or its one selected field.
+The subquery runs inside the same SQL statement, so related collections are
+filtered without copying their fields onto every document:
+
+```typescript
+const games = ez.collection('games')
+const teams = ez.collection('teams')
+
+// Stat lines from 2026 games played by SEC teams
+const lines = await ez.collection('player_game_stats')
+  .where('gameId', 'in', games.where('season', '==', 2026))
+  .where('teamId', 'in', teams.where('conference.abbreviation', '==', 'SEC'))
+  .limit(500)
+  .get()
+
+// A specific field instead of ids
+.where('venueId', 'in', games.where('season', '==', 2026).select('venueId'))
+```
+
+The caller needs read access to every collection a subquery reads, and that
+collection's rule filters apply inside the subquery. Subqueries cannot nest.
+Realtime subscriptions refresh on changes to the queried collection only.
+
+### Aggregation
+
+`.aggregate()` groups and summarizes matching documents in Postgres and returns
+one row per group:
+
+```typescript
+const leaders = await ez.collection('player_game_stats')
+  .where('gameId', 'in', games.where('season', '==', 2026))
+  .aggregate({
+    groupBy: ['playerId'],
+    select: {
+      games: ['count'],
+      carries: ['sum', 'stats.rushingAttempts'],
+      yards: ['sum', 'stats.rushingYards'],
+    },
+    having: [['carries', '>=', 40]],
+    orderBy: 'yards',
+    order: 'desc',
+    limit: 10,
+  })
+// → [{ playerId: '…', games: 7, carries: 139, yards: 837 }, …]
+```
+
+| Function | Result |
+|----------|--------|
+| `['count']` | Matching documents in the group |
+| `['count', field]` | Documents where `field` is present |
+| `['countDistinct', field]` | Distinct values of `field` |
+| `['sum' \| 'avg' \| 'min' \| 'max', field]` | Over JSON numbers only; strings, `null`, and missing values are skipped. `null` when the group has none. |
+
+- `groupBy`: up to 8 fields (dotted paths allowed); each appears in the row under its own name. Omit it for one row of totals.
+- `having` compares a `select` output to a number. `orderBy` takes a `select` output or a `groupBy` field; nulls sort last.
+- `limit` defaults to 100 like lists; `offset` pages.
+- Compute rates from totals (`yards / carries`), never by averaging per-document rates.
+- `countDistinct` sorts every matching row; prefer `['count']` when each document is already one entity per group.
+- An aggregate is a read: the same rules and filters apply as `.get()`. Each one is limited to 15 seconds; narrow the `where` if it runs out.
+
+Raw REST: `POST /api/collections/:col/aggregate` with the same object plus
+`where` as a JSON body.
 
 `.select()` also works directly on a collection and with `.onSnapshot()`. In
 TypeScript, selected document data is inferred as `Pick<T, K>`. Selection is
@@ -199,7 +267,7 @@ GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
 
 Always pass `.limit()` (or `?limit=`). Lists default to 100 and never return more than 10000 (`EZBASE_MAX_LIMIT`), including with the admin key. `limit=0` is an error.
 
-**Sortable/filterable fields:** Any field in your data, plus `created` and `updated` (document timestamps). Admin queries create btree indexes automatically for their JSON filter/sort shapes (composite of up to three equality fields plus the sort); client queries never create persistent database objects. Warm production query shapes once with an admin client so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
+**Sortable/filterable fields:** Any field in your data (dotted paths included), plus `created` and `updated` (document timestamps). Admin queries and aggregates create btree indexes automatically for their JSON filter/sort shapes — one per shape: a composite of up to three equality fields plus the sort (or of the equality fields alone for aggregates and subqueries), and single-field indexes for the range/`in` fields the composite does not cover. Indexes build in the background with `CREATE INDEX CONCURRENTLY`, so they never block writes; the query that triggers one runs without waiting. Client queries never create persistent database objects. Warm production query shapes once with an admin client so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
 
 ### Real-Time (SSE)
 
@@ -731,6 +799,7 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 |--------|------|-------------|
 | POST | `/collections/:col` | Create document (201) |
 | GET | `/collections/:col` | List / query docs (`?where=...&orderBy=...&order=...&limit=...`) |
+| POST | `/collections/:col/aggregate` | Group + summarize (read permission). Body: `{ where?, groupBy?, select, having?, orderBy?, order?, limit?, offset? }` |
 | GET | `/collections/:col/:id` | Get doc (404 if missing) |
 | PUT | `/collections/:col/:id` | Replace doc (upsert) |
 | PATCH | `/collections/:col/:id` | Partial update (merge); send the GET `ETag` as `If-Match` for an atomic conditional update |
@@ -849,7 +918,7 @@ Built-in request analytics — every API call is aggregated into per-minute buck
 
 | Param | Example | Description |
 |-------|---------|-------------|
-| `where` | `[["status","==","active"]]` | JSON array of `[field, op, value]` |
+| `where` | `[["status","==","active"]]` | JSON array of `[field, op, value]`. Ops: `== != < > <= >= in`. `in` takes an array or `{"collection","where"?,"field"?}` subquery. Fields may be dotted paths. |
 | `orderBy` | `created` | Field to sort by |
 | `order` | `desc` | `asc` or `desc` |
 | `limit` | `20` | Max docs. Defaults to 100 for everyone (including admin key). Hard cap 10000 (`EZBASE_MAX_LIMIT`). `0` / negative → 400. |
@@ -883,8 +952,7 @@ For agents working **on ezbase**, not in an app that uses it:
 | `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | SMTP details. Port default 587 (465 = implicit TLS). |
 | `EZBASE_REQUIRE_EMAIL_VERIFICATION` | No | `true` = users must verify email before signing in. Needs SMTP. |
 | `EZBASE_RATE_LIMIT` | No | Auth brute-force limiting (3 attempts/10s per IP on sign-in/sign-up/change-password). **Always on**; `false` disables — only for test stacks that hammer auth endpoints. |
-| `EZBASE_AUTO_INDEX` | No | `false` disables automatic btree indexes for JSON `where`/`orderBy` fields. Default is on, but only admin queries create them; warm real query shapes with an admin client after deploy. |
-| `EZBASE_GIN_EXCLUDE` | No | Comma-separated collections that skip the full-document GIN index (write-heavy/fat docs). Field btrees still apply. |
+| `EZBASE_AUTO_INDEX` | No | Default on: admin query shapes create btree indexes on their JSON expressions (concurrently, in the background); collections get no GIN. `false`: no automatic indexes; queries use `@>` containment and every collection gets a GIN on `data`. Warm real query shapes with an admin client after deploy. |
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
 | `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |

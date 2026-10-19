@@ -26,9 +26,10 @@ Detailed specs and plans live in `docs/`:
 
 - **Document CRUD** — create, read, update (full + partial), delete via REST
 - **Real-time** — SSE subscriptions at collection, document, and query level
-- **Query filtering** — `where`, `orderBy`, `order`, `limit`
+- **Query filtering** — `where` (`== != < > <= >= in`, dotted nested paths, `in` arrays or same-database subqueries), `orderBy`, `order`, `limit`
+- **Aggregation** — `POST .../aggregate`: `groupBy` + `count`/`countDistinct`/`sum`/`avg`/`min`/`max`, `having`, ordering; runs in Postgres under a 15s statement timeout
 - **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), created on an admin's first write
-- **Per-collection tables** — each collection gets its own `col_<name>` Postgres table with GIN indexes
+- **Per-collection tables** — each collection gets its own `col_<name>` Postgres table; admin query shapes get btree indexes on their JSON expressions
 - **Auth** — BetterAuth (email/password, OAuth). Console → Auth for public URL + providers (`/data/auth.json`) and a users table (email, UID, provider, created, last signed in). Per-collection permissions, claims, user management. Password reset (SMTP optional), rate limiting.
 - **Rules** — Declarative `rules.json` for per-collection access control + claim-based document filters (replaces `_ezbase_config` Postgres table)
 - **File Storage** — upload/download/delete files via REST, stored on disk (Docker volume), metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json`
@@ -50,7 +51,7 @@ Monorepo: `server/`, `sdk/`, `console/`. Runs as a Docker Compose stack in devel
 | Component | Status |
 |-----------|--------|
 | **Runtime** | Bun + Hono |
-| **Storage** | Per-collection tables (`col_*`) in per-database schemas (`db_*`) with JSONB + GIN indexes |
+| **Storage** | Per-collection tables (`col_*`) in per-database schemas (`db_*`) with JSONB + per-query-shape btree indexes |
 | **Databases** | Multiple databases per instance, each a Postgres schema, created on an admin's first write |
 | **Pub/sub** | Postgres LISTEN/NOTIFY |
 | **Auth** | BetterAuth (sessions, email/password, OAuth providers) — shared across databases |
@@ -78,7 +79,7 @@ Verify: `curl http://localhost:7003/api/health`
 | `server/src/backups.ts` | Backup/restore engine: streaming tar.gz create, list/download/delete, filtered restore |
 | `server/src/analytics.ts` | Request analytics: classification middleware, minute-bucket aggregation, summary/timeseries/live endpoints |
 | `server/src/routes.ts` | CRUD, SSE |
-| `server/src/query.ts` | Query SQL + auto btree indexes for JSON where/orderBy |
+| `server/src/query.ts` | Query + aggregate SQL, `in` subqueries, index hints for JSON where/orderBy |
 | `server/src/auth.ts` | BetterAuth instance + `/me` + user management + auth settings |
 | `server/src/auth-settings.ts` | `/data/auth.json` — public URL + OAuth providers (console) |
 | `server/src/middleware.ts` | Auth extraction (BetterAuth sessions + claims), permission checks via rules |
@@ -102,6 +103,7 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | GET | `/collections` | List collection names the caller can read (default db) |
 | POST | `/collections/:col` | Create document (default db) |
 | GET | `/collections/:col` | List/query documents (default db; `?fields=name,status`) |
+| POST | `/collections/:col/aggregate` | Group + summarize documents (read permission, default db) |
 | GET | `/collections/:col/:id` | Get document (default db) |
 | PUT | `/collections/:col/:id` | Replace document (upsert, default db) |
 | PATCH | `/collections/:col/:id` | Partial update (default db) |
@@ -152,7 +154,7 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 
 ## Database
 
-Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with GIN on `data` (unless `EZBASE_GIN_EXCLUDE`), btrees on `created_at`/`updated_at`, and auto btrees on JSON fields used in queries. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
+Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with btrees on `created_at`/`updated_at` and auto btrees on the JSON expressions admin queries use (one per query shape, built concurrently). With `EZBASE_AUTO_INDEX=false`, queries use `@>` containment and each table gets a GIN on `data` instead. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
 
 Collection permissions are defined in `/data/rules.json` (one file per instance, covers all databases). Format:
 
