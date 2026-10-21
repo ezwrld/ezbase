@@ -17,6 +17,27 @@ interface AggregateOptions<S extends Record<string, AggregateSpec>, G extends st
   offset?: number
 }
 
+/** An indexes.json entry: equality fields first, then the one field the index keeps sorted. */
+interface DeclaredIndex {
+  equals?: string[]
+  orderedBy?: string
+}
+
+interface DeclaredIndexStatus extends DeclaredIndex {
+  database: string
+  collection: string
+  name: string
+  state: 'ready' | 'building' | 'queued' | 'no collection'
+  sizeBytes: number
+  reads: number
+}
+
+/** How a query ran: the index entry that serves it (or the one to add) and Postgres's real plan. */
+interface QueryExplanation {
+  index: string
+  plan: { index: string; read: number; returned: number; ms: number } | null
+}
+
 type AggregateRow<S extends Record<string, AggregateSpec>, G extends string> =
   { [K in G]: unknown } & { [K in keyof S]: number | null }
 
@@ -500,6 +521,13 @@ class EzBase {
     return this._defaultDb.setPermission(collection, level)
   }
 
+  /** Declared indexes (indexes.json) in every database, with build state, size and reads. Admin key. */
+  async indexes(): Promise<DeclaredIndexStatus[]> {
+    const res = await fetch(`${this.url}/api/indexes`, { headers: this._authHeaders() })
+    if (!res.ok) throw new Error(`${this._errorPrefix}: ${res.status} ${await res.text()}`)
+    return res.json()
+  }
+
   async getRules(): Promise<RulesResponse> {
     const res = await fetch(`${this.url}/api/rules`, {
       headers: this._authHeaders(),
@@ -798,6 +826,25 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
     return `${this.db._basePath()}/collections/${encodeURIComponent(this.collection)}`
   }
 
+  /**
+   * Run the query once with EXPLAIN ANALYZE (admin key). `index` names the
+   * indexes.json entry that serves it, or `undeclared; add {...}` with the entry
+   * to declare; `plan` is what Postgres actually did.
+   */
+  async explain(): Promise<QueryExplanation> {
+    const res = await fetch(`${this._basePath()}${this.buildParams()}`, {
+      headers: { ...this.ez._authHeaders(), 'X-Ezbase-Explain': '1' },
+    })
+    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
+    await res.body?.cancel()
+    const raw = res.headers.get('x-ezbase-plan')
+    const parts = Object.fromEntries((raw || '').split('; ').map((part) => part.split('=') as [string, string]))
+    return {
+      index: res.headers.get('x-ezbase-index') || '',
+      plan: raw ? { index: parts.index, read: Number(parts.read), returned: Number(parts.returned), ms: Number(parts.ms) } : null,
+    }
+  }
+
   /** Group and summarize matching documents server-side. Numeric functions ignore non-number values. */
   async aggregate<S extends Record<string, AggregateSpec>, G extends string = never>(
     options: AggregateOptions<S, G>
@@ -828,5 +875,5 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
 }
 
 export { EzBase, DatabaseRef, CollectionRef, DocRef, QueryRef, AuthClient, StorageBucket, FileHandle }
-export type { Document, WhereOp, OrderDir, AggregateFn, AggregateSpec, AggregateOptions, AggregateRow, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, RuleValue, ReadWriteRule }
+export type { Document, WhereOp, OrderDir, DeclaredIndex, DeclaredIndexStatus, QueryExplanation, AggregateFn, AggregateSpec, AggregateOptions, AggregateRow, EzBaseOptions, AuthUser, FileMeta, RulesFile, CollectionRule, FilterMap, RulesResponse, RuleValue, ReadWriteRule }
 export default EzBase

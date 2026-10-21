@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import type { Context, Next } from 'hono'
 import { cors } from 'hono/cors'
+import { loadIndexes, watchIndexes } from './indexes.js'
 import { logger } from 'hono/logger'
 import { databaseExists, init, migrateToSchemas, validateDatabaseName } from './db.js'
 import { initPubSub } from './pubsub.js'
@@ -18,7 +19,7 @@ const { basePath } = getPublicUrl()
 const app = basePath ? new Hono().basePath(basePath) : new Hono()
 
 app.use('*', logger())
-app.use('*', cors())
+app.use('*', cors({ origin: '*', exposeHeaders: ['X-Ezbase-Index', 'X-Ezbase-Plan', 'Server-Timing', 'ETag'] }))
 app.use('*', extractAuth)
 app.use('*', analyticsMiddleware())
 
@@ -77,6 +78,8 @@ initConfig()
 await migrateToSchemas()
 await loadRules()
 watchRules()
+await loadIndexes()
+watchIndexes()
 watchAuthSettings(() => rebuildAuth())
 await Promise.all([init(), initPubSub(), initAuth(), initAnalytics()])
 

@@ -23,6 +23,12 @@ const pendingDatabases = new Map<string, Promise<void>>()
 const pendingCollections = new Map<string, Promise<void>>()
 const jsonIndexes = new Set<string>()
 const pendingJsonIndexes = new Map<string, Promise<void>>()
+const collectionCreatedHooks: Array<(database: string, collection: string) => void> = []
+
+/** Runs after ensureCollection creates a table, e.g. to apply declared indexes. */
+export function onCollectionCreated(hook: (database: string, collection: string) => void) {
+  collectionCreatedHooks.push(hook)
+}
 
 export type QueryIndexHints = {
   eqFields: string[]
@@ -141,6 +147,17 @@ export function qualifiedTableName(database: string, collection: string): string
   return `db_${database}.col_${collection}`
 }
 
+const FIELD_PART_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/
+
+/** A document field, optionally a dotted path into nested objects (`stats.rushingYards`). */
+export function sanitizeField(field: string): string {
+  const parts = typeof field === 'string' ? field.split('.') : []
+  if (parts.length === 0 || parts.length > 8 || !parts.every((part) => FIELD_PART_RE.test(part))) {
+    throw new Error(`Invalid field name: ${field}`)
+  }
+  return field
+}
+
 /** `data->'a'->'b'` for a sanitized dotted path; query predicates and index expressions must match exactly. */
 export function jsonPath(field: string): string {
   return `data${field.split('.').map((part) => `->'${part}'`).join('')}`
@@ -194,6 +211,7 @@ export async function ensureCollection(database: string, name: string) {
       await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_updated`)} ON ${table} (updated_at)`
 
       ensured.add(cacheKey)
+      for (const hook of collectionCreatedHooks) hook(database, name)
     }).finally(() => pendingCollections.delete(cacheKey))
     pendingCollections.set(cacheKey, pending)
   }
@@ -269,13 +287,13 @@ function jsonExpr(field: string): string {
  * writes to a live table; the triggering query runs without waiting. ANALYZE
  * afterwards gives the planner statistics for the new expression.
  */
-function createIndexOnce(name: string, table: string, columns: string, partial: string) {
+function createIndexOnce(name: string, table: string, columns: string, partial: string | null) {
   if (jsonIndexes.has(name) || pendingJsonIndexes.has(name)) return
   const pending = (async () => {
     try {
       await withDdlRetry(async () => {
         const t0 = Date.now()
-        await sql.unsafe(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${table} (${columns}) WHERE ${partial}`)
+        await sql.unsafe(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${table} (${columns})${partial ? ` WHERE ${partial}` : ''}`)
         await sql.unsafe(`ANALYZE ${table}`)
         const ms = Date.now() - t0
         if (ms >= 100) console.log(`  created index ${name} in ${ms}ms`)
@@ -289,6 +307,39 @@ function createIndexOnce(name: string, table: string, columns: string, partial: 
     }
   })().finally(() => pendingJsonIndexes.delete(name))
   pendingJsonIndexes.set(name, pending)
+}
+
+export type IndexDefinition = { name: string; columns: string; partial: string | null }
+
+/**
+ * The one place an index shape becomes DDL. Automatic and declared indexes both
+ * go through it, so a declared shape that the auto-indexer already built has the
+ * same name and definition and is adopted instead of rebuilt. `order` is a JSON
+ * field or the created_at/updated_at column; null for equality-only shapes.
+ */
+export function indexDefinition(
+  database: string,
+  collection: string,
+  equals: string[],
+  order: string | null
+): IndexDefinition | null {
+  const eq = equals.slice(0, 3)
+  const column = order === 'created_at' || order === 'updated_at'
+  if (eq.length === 0) {
+    if (!order || column) return null
+    return { name: sqlIndexName(database, collection, 'o', [order]), columns: jsonExpr(order), partial: null }
+  }
+  const partial = `${jsonExpr(eq[0])} IS NOT NULL`
+  const parts = [...eq]
+  if (order && !column && !eq.includes(order)) parts.push(order)
+  if (parts.length === 1 && !column) {
+    return { name: sqlIndexName(database, collection, 'j', parts), columns: jsonExpr(parts[0]), partial }
+  }
+  return {
+    name: sqlIndexName(database, collection, order ? 'c' : 'e', column ? [...parts, order!] : parts),
+    columns: parts.map(jsonExpr).join(', ') + (column ? `, ${order}` : ''),
+    partial,
+  }
 }
 
 /**
@@ -315,17 +366,11 @@ export async function ensureQueryIndexes(
   const eq = hints.eqFields.slice(0, 3)
   const orderField = hints.orderField
   if (eq.length > 0) {
-    const parts = [...eq]
-    let extra = ''
-    if (orderField === 'created_at' || orderField === 'updated_at') {
-      extra = `, ${orderField}`
-    } else if (orderField && !eq.includes(orderField)) {
-      parts.push(orderField)
-    }
-    if (parts.length > 1 || extra) {
-      const name = sqlIndexName(database, collection, orderField ? 'c' : 'e', extra ? [...parts, orderField!] : parts)
-      createIndexOnce(name, table, parts.map(jsonExpr).join(', ') + extra, `${jsonExpr(eq[0])} IS NOT NULL`)
-      parts.forEach((field) => covered.add(field))
+    const composite = indexDefinition(database, collection, eq, orderField)
+    if (composite?.columns.includes(',')) {
+      createIndexOnce(composite.name, table, composite.columns, composite.partial)
+      eq.forEach((field) => covered.add(field))
+      if (orderField && orderField !== 'created_at' && orderField !== 'updated_at') covered.add(orderField)
     }
   }
 

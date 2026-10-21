@@ -27,6 +27,7 @@ Detailed specs and plans live in `docs/`:
 - **Document CRUD** — create, read, update (full + partial), delete via REST
 - **Real-time** — SSE subscriptions at collection, document, and query level
 - **Query filtering** — `where` (`== != < > <= >= in`, dotted nested paths, `in` arrays or same-database subqueries), `orderBy`, `order`, `limit`
+- **Declared indexes** — `/data/indexes.json` (`collections.<name>.indexes: [{ equals, orderedBy }]`), built concurrently, hot-reloaded, removed entries dropped; every list/aggregate response carries `X-Ezbase-Index` (declared entry or the one to add) and `Server-Timing`; admin `X-Ezbase-Explain: 1` / SDK `.explain()` adds the real plan; `GET /api/indexes` status
 - **Aggregation** — `POST .../aggregate`: `groupBy` + `count`/`countDistinct`/`sum`/`avg`/`min`/`max`, `having`, ordering; runs in Postgres under a 15s statement timeout
 - **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), created on an admin's first write
 - **Per-collection tables** — each collection gets its own `col_<name>` Postgres table; admin query shapes get btree indexes on their JSON expressions
@@ -79,6 +80,7 @@ Verify: `curl http://localhost:7003/api/health`
 | `server/src/backups.ts` | Backup/restore engine: streaming tar.gz create, list/download/delete, filtered restore |
 | `server/src/analytics.ts` | Request analytics: classification middleware, minute-bucket aggregation, summary/timeseries/live endpoints |
 | `server/src/routes.ts` | CRUD, SSE |
+| `server/src/indexes.ts` | indexes.json load/watch/apply, query-shape matching for `X-Ezbase-Index`, `/api/indexes` status |
 | `server/src/query.ts` | Query + aggregate SQL, `in` subqueries, index hints for JSON where/orderBy |
 | `server/src/auth.ts` | BetterAuth instance + `/me` + user management + auth settings |
 | `server/src/auth-settings.ts` | `/data/auth.json` — public URL + OAuth providers (console) |

@@ -213,6 +213,79 @@ The caller needs read access to every collection a subquery reads, and that
 collection's rule filters apply inside the subquery. Subqueries cannot nest.
 Realtime subscriptions refresh on changes to the queried collection only.
 
+### Indexes
+
+Declare the indexes your queries need in `indexes.json`, next to `rules.json`,
+and mount it at `/data/indexes.json`. ezbase builds each one in the background
+(`CREATE INDEX CONCURRENTLY`, never blocking writes), reloads when the file
+changes, and drops an index you remove from the file.
+
+```json
+{
+  "collections": {
+    "player_game_stats": {
+      "indexes": [
+        { "equals": ["gameId"], "orderedBy": "updated" },
+        { "equals": ["canonicalPlayerId"], "orderedBy": "id" }
+      ]
+    }
+  }
+}
+```
+
+Keys under `collections` are collection names. Each index lists:
+
+| Key | Meaning |
+|-----|---------|
+| `equals` | Up to 3 fields the query filters with `==` or `in` (dotted paths allowed) |
+| `orderedBy` | The one field the index keeps sorted: the query's `orderBy`, or the field it filters with `<` `>` `<=` `>=`. `created` and `updated` are the document timestamps. |
+
+A query uses an index when every `equals` field appears in its `==`/`in`
+filters and its `orderBy` (or range field) is the index's `orderedBy`. Field
+order in `equals` and sort direction don't matter; extra filters still work and
+are applied after the index narrows the rows.
+
+```typescript
+// served by { "equals": ["gameId"], "orderedBy": "updated" }
+await ez.collection('player_game_stats')
+  .where('gameId', '==', gameId)
+  .orderBy('updated', 'desc')
+  .limit(500)
+  .get()
+```
+
+**Every query reports its index** in the `X-Ezbase-Index` response header:
+
+```text
+X-Ezbase-Index: declared {"equals":["gameId"],"orderedBy":"updated"}
+X-Ezbase-Index: undeclared; add {"equals":["sport"],"orderedBy":"observedAt"}
+X-Ezbase-Index: built-in created
+```
+
+`undeclared; add …` is the exact entry to paste into `indexes.json`.
+`Server-Timing: db;dur=…` carries the query time. With the admin key,
+`.explain()` (or the `X-Ezbase-Explain: 1` request header) runs EXPLAIN ANALYZE
+and reports what Postgres actually did:
+
+```typescript
+await ez.collection('player_game_stats')
+  .where('sport', '==', 'NFL').orderBy('observedAt', 'desc').limit(25)
+  .explain()
+// → { index: 'declared {"equals":["sport"],"orderedBy":"observedAt"}',
+//     plan: { index: 'idx_default_player_game_stats_c_sport_observedat', read: 25, returned: 25, ms: 0.07 } }
+```
+
+`read` far above `returned` means the query scans to find its rows; declare the
+suggested entry. `ez.indexes()` (`GET /api/indexes`) lists every declared index
+with its state (`ready`, `building`, `queued`), size and reads.
+
+**When you write a query, declare its index in the same change.** A new
+`where`/`orderBy` shape gets a line in `indexes.json`; run the query once with
+`.explain()` to confirm `declared` and `read` ≈ `returned`.
+
+Undeclared query shapes run by the admin key still get an automatic index on
+first use. Declaring the same shape adopts that index instead of rebuilding it.
+
 ### Aggregation
 
 `.aggregate()` groups and summarizes matching documents in Postgres and returns
@@ -729,6 +802,7 @@ services:
     image: ghcr.io/ezwrld/ezbase:latest
     volumes:
       - ./rules.json:/data/rules.json:ro  # read-only mount
+      - ./indexes.json:/data/indexes.json:ro
 ```
 
 Console shows rules as read-only. `PUT /api/rules` returns 409.
@@ -800,6 +874,7 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 | POST | `/collections/:col` | Create document (201) |
 | GET | `/collections/:col` | List / query docs (`?where=...&orderBy=...&order=...&limit=...`) |
 | POST | `/collections/:col/aggregate` | Group + summarize (read permission). Body: `{ where?, groupBy?, select, having?, orderBy?, order?, limit?, offset? }` |
+| GET | `/indexes` | Declared indexes with state, size, reads (admin) |
 | GET | `/collections/:col/:id` | Get doc (404 if missing) |
 | PUT | `/collections/:col/:id` | Replace doc (upsert) |
 | PATCH | `/collections/:col/:id` | Partial update (merge); send the GET `ETag` as `If-Match` for an atomic conditional update |
@@ -955,6 +1030,7 @@ For agents working **on ezbase**, not in an app that uses it:
 | `EZBASE_AUTO_INDEX` | No | Default on: admin query shapes create btree indexes on their JSON expressions (concurrently, in the background); collections get no GIN. `false`: no automatic indexes; queries use `@>` containment and every collection gets a GIN on `data`. Warm real query shapes with an admin client after deploy. |
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
+| `INDEXES_PATH` | No | Path to indexes.json. Default: `/data/indexes.json`. |
 | `STORAGE_PATH` | No | File storage directory. Default: `/data/files`. |
 | `BACKUP_PATH` | No | Backup directory. Default: `{STORAGE_PATH}/.backups`. |
 | `EZBASE_MAX_FILE_SIZE` | No | Max upload size in bytes. Default: 100MB. |
