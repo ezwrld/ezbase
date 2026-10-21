@@ -13,6 +13,36 @@ Pin `ghcr.io/ezwrld/ezbase:1.0`-style tags to control when you take upgrades; `:
 
 ---
 
+## v1.11 — 2026-10-21
+
+Declared indexes and a query-by-query index report.
+
+### Added
+- **`/data/indexes.json`** (`INDEXES_PATH`): `{ "collections": { "<name>": { "indexes": [{ "equals": [...], "orderedBy": "..." }] } } }`. ezbase builds each declared index with `CREATE INDEX CONCURRENTLY` in the background, one at a time, then `ANALYZE`. It reloads when the file changes and drops an index whose entry is removed. A collection created later gets its declared indexes on creation. A declared shape the auto-indexer already built is adopted (same name and definition), not rebuilt.
+- **`X-Ezbase-Index`** on every list and aggregate response: `declared {...}`, `built-in created|updated`, `undeclared; add {...}` with the exact entry to declare, or `full scan`. **`Server-Timing: db;dur=…`** carries the query time. Both are exposed to browsers via CORS.
+- **Explain**: with the admin key, `X-Ezbase-Explain: 1` (SDK `query.explain()`) runs EXPLAIN ANALYZE and returns `X-Ezbase-Plan: index=…; read=…; returned=…; ms=…`.
+- **`GET /api/indexes`** (SDK `ez.indexes()`): every declared index in every database with state (`ready`, `building`, `queued`, `no collection`), size and reads.
+
+### Changed
+- Admin queries whose shape a declared index already serves no longer trigger automatic index creation.
+- Automatic and declared indexes share one definition builder (`indexDefinition`), so their names and SQL match.
+
+### Upgrade considerations
+- None. Without `indexes.json` everything behaves as in 1.10, plus the new response headers.
+- Mount `indexes.json` read-only next to `rules.json` (`./indexes.json:/data/indexes.json:ro`). To migrate, declare the shapes your app actually runs; entries matching existing automatic indexes are adopted in place.
+
+### Agent prompt
+```
+Update this project to ezbase 1.11 (image ghcr.io/ezwrld/ezbase:1.11, SDK @ezwrld/ezbase 1.7.0). GET {ezbase}/api/health must report "1.11".
+
+1. Create indexes.json next to rules.json and mount it at /data/indexes.json (read-only).
+2. For each query shape the app runs (where ==/in fields + orderBy or range field), add { "equals": [...], "orderedBy": "..." } under its collection.
+3. Run each important query once with .explain() (admin key): it must say `declared {...}` and plan.read should be close to plan.returned. Add any `undeclared; add {...}` entry it suggests.
+4. GET /api/indexes: every entry should reach state "ready".
+```
+
+---
+
 ## v1.10 — 2026-10-19
 
 Aggregation, `in`, and nested fields — querying that uses Postgres instead of fighting jsonb.

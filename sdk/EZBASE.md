@@ -138,6 +138,19 @@ const lines = await ez.collection('player_game_stats')
   .get()
 ```
 
+### Indexes
+
+Declare the indexes your queries need in `indexes.json` (mounted at
+`/data/indexes.json`); every response's `X-Ezbase-Index` header says which
+entry served it, or the exact entry to add.
+
+```ts
+await ez.collection('player_game_stats')
+  .where('gameId', '==', id).orderBy('updated', 'desc').limit(500)
+  .explain()   // admin key: index entry + Postgres's real plan
+await ez.indexes()  // declared indexes with state, size, reads
+```
+
 ### Aggregation
 
 ```ts

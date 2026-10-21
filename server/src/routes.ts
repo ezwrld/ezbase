@@ -5,6 +5,7 @@ import { keepAlive } from './sse.js'
 import { sql, collectionExists, ensureCollection, qualifiedTable, clearDatabaseCaches } from './db.js'
 import { generateId } from './id.js'
 import {
+  summarizePlan,
   formatAggregateRow,
   parseAggregate,
   parseFields,
@@ -17,6 +18,7 @@ import {
 } from './query.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { canReadCollection, checkCollectionAccess, requirePermission } from './middleware.js'
+import { declaredIndexStatus } from './indexes.js'
 import { hasExplicitCollectionRule } from './rules.js'
 import type { AppliedFilter } from './rules.js'
 
@@ -99,6 +101,19 @@ function docMatchesFilters(data: Record<string, unknown>, filters: AppliedFilter
     }
   }
   return true
+}
+
+/** Runs a query, setting X-Ezbase-Index and Server-Timing; an admin's X-Ezbase-Explain adds the real plan. */
+async function runReported(c: Context, query: string, params: unknown[], index: string, run: () => Promise<any[]>) {
+  c.header('X-Ezbase-Index', index)
+  if ((c.get('role') || 'anonymous') === 'admin' && c.req.header('x-ezbase-explain')) {
+    const [{ 'QUERY PLAN': plan }] = await sql.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON) ${query}`, params as any[])
+    c.header('X-Ezbase-Plan', summarizePlan(plan[0]))
+  }
+  const t0 = performance.now()
+  const rows = await run()
+  c.header('Server-Timing', `db;dur=${(performance.now() - t0).toFixed(1)}`)
+  return rows
 }
 
 // Aggregates scan every matching row; cap them so one cannot monopolize the database.
@@ -342,10 +357,11 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
     let query: string
     let params: unknown[]
+    let index: string
     try {
       const resolved = await resolveSubqueries(c, database, parseWhere(c.req.query('where')))
       if (!resolved.ok) return resolved.response
-      ;({ query, params } = await prepareQuery(
+      ;({ query, params, index } = await prepareQuery(
         database,
         collection,
         c.req.query('where'),
@@ -361,7 +377,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
     }
-    const rows = await sql.unsafe(query, params as any[])
+    const rows = await runReported(c, query, params, index, () => sql.unsafe(query, params as any[]))
     return c.json(rows.map(formatDoc))
   })
 
@@ -376,12 +392,13 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     let query: string
     let params: unknown[]
     let groupBy: string[]
+    let index: string
     try {
       const req = parseAggregate(parsed.body)
       groupBy = req.groupBy ?? []
       const resolved = await resolveSubqueries(c, database, req.where ?? [])
       if (!resolved.ok) return resolved.response
-      ;({ query, params } = await prepareAggregate(
+      ;({ query, params, index } = await prepareAggregate(
         database,
         collection,
         req,
@@ -393,10 +410,10 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid aggregate' }, 400)
     }
     try {
-      const rows = await sql.begin(async (tx) => {
+      const rows = await runReported(c, query, params, index, () => sql.begin(async (tx) => {
         await tx.unsafe(`SET LOCAL statement_timeout = ${AGGREGATE_TIMEOUT_MS}`)
         return tx.unsafe(query, params as any[])
-      })
+      }))
       return c.json(rows.map((row) => formatAggregateRow(row, groupBy)))
     } catch (error) {
       if ((error as { code?: string }).code === '57014') {
@@ -590,6 +607,15 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 const adminRoutes = new Hono()
 
 adminRoutes.get('/health', (c) => c.json({ status: 'ok', version: process.env.EZBASE_VERSION || 'dev' }))
+
+// Declared indexes (indexes.json) and their build state
+adminRoutes.get('/indexes', async (c) => {
+  const role = c.get('role') || 'anonymous'
+  if (role !== 'admin') {
+    return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
+  }
+  return c.json(await declaredIndexStatus())
+})
 
 // List databases
 adminRoutes.get('/databases', async (c) => {

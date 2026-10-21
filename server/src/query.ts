@@ -1,7 +1,8 @@
 import type { AppliedFilter } from './rules.js'
-import { autoIndexEnabled, ensureQueryIndexes, jsonPath, qualifiedTableName } from './db.js'
+import { describeIndexUse, queryShape } from './indexes.js'
+import { autoIndexEnabled, ensureQueryIndexes, jsonPath, qualifiedTableName, sanitizeField } from './db.js'
 
-export { autoIndexEnabled }
+export { autoIndexEnabled, sanitizeField }
 
 const OPS: Record<string, string> = {
   '==': '=',
@@ -14,17 +15,8 @@ const OPS: Record<string, string> = {
 }
 
 const KEY_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/
-const MAX_PATH_DEPTH = 8
 const MAX_IN_VALUES = 10000
 
-/** A document field, optionally a dotted path into nested objects (`stats.rushingYards`). */
-export function sanitizeField(field: string): string {
-  const parts = typeof field === 'string' ? field.split('.') : []
-  if (parts.length === 0 || parts.length > MAX_PATH_DEPTH || !parts.every((part) => KEY_RE.test(part))) {
-    throw new Error(`Invalid field name: ${field}`)
-  }
-  return field
-}
 
 function sanitizeKey(field: string): string {
   if (!KEY_RE.test(field)) throw new Error(`Invalid field name: ${field}`)
@@ -377,12 +369,13 @@ export async function prepareQuery(
   fields?: string[],
   isAdmin = false,
   subqueries?: SubqueryAccess
-): Promise<{ query: string; params: unknown[] }> {
+): Promise<{ query: string; params: unknown[]; index: string }> {
   const useJsonb = autoIndexEnabled()
-  if (shouldEnsureQueryIndexes(isAdmin)) {
+  const index = describeIndexUse(collection, queryShape(parseWhere(whereParam), docFilters, orderBy, 'created'))
+  if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
     await ensureWhereIndexes(database, parseWhere(whereParam), collection, orderBy, docFilters, subqueries, true)
   }
-  return buildQuerySql(
+  return { index, ...buildQuerySql(
     database,
     collection,
     whereParam,
@@ -395,7 +388,7 @@ export async function prepareQuery(
     isAdmin,
     useJsonb,
     subqueries
-  )
+  ) }
 }
 
 // ── Aggregation ──────────────────────────────────────────────
@@ -517,11 +510,33 @@ export async function prepareAggregate(
   docFilters?: AppliedFilter[],
   isAdmin = false,
   subqueries?: SubqueryAccess
-): Promise<{ query: string; params: unknown[] }> {
-  if (shouldEnsureQueryIndexes(isAdmin)) {
+): Promise<{ query: string; params: unknown[]; index: string }> {
+  const index = describeIndexUse(collection, queryShape(req.where ?? [], docFilters, undefined, null))
+  if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
     await ensureWhereIndexes(database, req.where ?? [], collection, undefined, docFilters, subqueries, false)
   }
-  return buildAggregateSql(database, collection, req, docFilters, autoIndexEnabled(), subqueries)
+  return { index, ...buildAggregateSql(database, collection, req, docFilters, autoIndexEnabled(), subqueries) }
+}
+
+type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] }
+
+/** One-line summary of EXPLAIN ANALYZE: indexes used, rows the scans touched, rows returned. */
+export function summarizePlan(plan: { Plan: PlanNode; 'Execution Time': number }): string {
+  const indexes = new Set<string>()
+  let read = 0
+  let seq = false
+  const walk = (node: PlanNode) => {
+    if (typeof node['Index Name'] === 'string') indexes.add(node['Index Name'])
+    if (node['Node Type'] === 'Seq Scan' && String(node['Relation Name'] ?? '').startsWith('col_')) seq = true
+    if (node['Relation Name']) {
+      const loops = Number(node['Actual Loops'] ?? 1)
+      read += (Number(node['Actual Rows'] ?? 0) + Number(node['Rows Removed by Filter'] ?? 0) + Number(node['Rows Removed by Index Recheck'] ?? 0)) * loops
+    }
+    for (const child of node.Plans ?? []) walk(child)
+  }
+  walk(plan.Plan)
+  const used = [...indexes, ...(seq ? ['seq scan'] : [])].join(',') || 'none'
+  return `index=${used}; read=${Math.round(read)}; returned=${plan.Plan['Actual Rows']}; ms=${plan['Execution Time'].toFixed(2)}`
 }
 
 /** Rename `group:N` columns back to their groupBy field names. */
