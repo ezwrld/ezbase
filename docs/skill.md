@@ -8,7 +8,7 @@ A self-hosted document database. One Docker image, one port, no schema boilerpla
 
 ezbase is a **DX wrapper**, not a database engine. Under the hood:
 
-- **Postgres** — document storage (JSONB per-collection tables with GIN indexes), pub/sub (LISTEN/NOTIFY), auth storage
+- **Postgres** — document storage (JSONB per-collection tables with per-query btree indexes), pub/sub (LISTEN/NOTIFY), auth storage
 - **BetterAuth** — email/password authentication, session tokens
 - **Hono** — REST API framework (runs on Bun)
 - **Nginx** — reverse proxy, serves console UI, single port (7003)
@@ -1002,7 +1002,7 @@ Built-in request analytics — every API call is aggregated into per-minute buck
 
 For agents maintaining an ezbase deployment:
 
-1. **Find the running version**: `GET /api/health` → `{ "status": "ok", "version": "1.0" }` (`"dev"` = non-release build). SDK version is in your `package.json` (`@ezwrld/ezbase`).
+1. **Find the running version**: `GET /api/health` → `{ "status": "ok", "version": "1.11" }` (`"dev"` = non-release build). SDK version is in your `package.json` (`@ezwrld/ezbase`).
 2. **Read the changelog before upgrading**: https://raw.githubusercontent.com/ezwrld/ezbase/master/CHANGELOG.md — every release has an **Upgrade considerations** section.
 3. **Version sequence**: image releases advance the right-hand number (`1.8` → `1.9` → `1.10`). This is a simple release sequence, not semantic major/minor signaling; read every intervening entry's **Upgrade considerations**.
 4. **Pinning**: use a pinned tag (`ghcr.io/ezwrld/ezbase:1.9`) to control when upgrades happen; `:latest` tracks the newest release. Take a backup before upgrades that affect persisted behavior: `ez backup` (or `POST /api/backups`).

@@ -10,7 +10,7 @@ ezbase is a collection of open-source tools wired together behind one API rather
 # docker-compose.yml
 services:
   ezbase:
-    image: ghcr.io/ezwrld/ezbase:1.0
+    image: ghcr.io/ezwrld/ezbase:latest
     ports:
       - "7003:7003"
     volumes:
@@ -24,6 +24,8 @@ volumes:
 docker compose up -d
 npm install @ezwrld/ezbase
 ```
+
+In production, pin a [release](https://github.com/ezwrld/ezbase/releases) tag (`ghcr.io/ezwrld/ezbase:X.Y`) and read its [CHANGELOG](CHANGELOG.md) entry before moving to the next.
 
 Fresh instances deny client access until you configure rules. Get the admin key
 from `docker compose logs ezbase`, open `http://localhost:7003/console`, and set:
@@ -72,7 +74,9 @@ Rule filters are applied to queries automatically and enforced on writes: in an 
 
 ## Features
 
-- **Documents** — schemaless JSONB, per-collection Postgres tables, `where`/`orderBy`/`limit` queries, typed top-level `select`
+- **Documents** — schemaless JSONB, per-collection Postgres tables, `where`/`orderBy`/`limit` queries with nested paths and `in` subqueries, typed top-level `select`
+- **Aggregation** — `groupBy` with `count`/`countDistinct`/`sum`/`avg`/`min`/`max` and `having`, computed in Postgres
+- **Indexes** — automatic per-query btrees, or declared in `indexes.json`; every query reports the index it used
 - **Realtime** — SSE subscriptions on collections, queries, or single documents
 - **Auth** — email/password, OAuth, sessions, roles, custom claims, password reset (SMTP or logged links), admin user management, always-on brute-force rate limiting
 - **Rules** — per-collection read/write permissions with owner/role/claim filters, enforced on reads and writes; secure defaults on fresh instances
@@ -115,7 +119,8 @@ source setup.sh && ez up
 - [x] File storage with bucket permissions
 - [x] Backups & restore
 - [x] Request analytics + console Activity page
-- [x] 1.0
+- [x] Aggregation, `in` subqueries, declared indexes
+- [ ] Webhooks on document changes
 - [ ] Type inference — generate TypeScript types from live data, with conformance reporting
 - [ ] Full-text search (Meilisearch)
 - [ ] Backup scheduling, restore points, S3 push
