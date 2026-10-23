@@ -103,5 +103,7 @@ Not building this yet. Current permission system (rules.json with read/write spl
 7. ~~**Auth: Custom claims** — role + claims fields, admin user management endpoints~~ **Done**
 8. ~~**Console admin gate** — login screen, key rotation, all API calls authenticated~~ **Done**
 9. ~~**Separate read/write permissions** — `rules.json` with `read` / `write` rule keys~~ **Done**
-10. **Backups** — automated pg_dump, point-in-time recovery
-11. **Observability** — request metrics, auth analytics, console dashboard
+10. ~~**Backups** — streaming tar.gz, granular restore~~ **Done**
+11. ~~**Observability** — request metrics, console Activity page~~ **Done**
+
+What comes next: [PLAN.md](PLAN.md).
