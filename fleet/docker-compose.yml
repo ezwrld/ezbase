@@ -1,0 +1,15 @@
+services:
+  fleet:
+    build:
+      context: ..
+      dockerfile: fleet/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7490:7490"
+    environment:
+      FLEET_HOME: ${HOME}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${HOME}:${HOME}:ro

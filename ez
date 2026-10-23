@@ -117,6 +117,10 @@ case "$1" in
     cd "$EZBASE_SRC"
     docker compose logs -f "${@:2}"
     ;;
+  fleet)
+    docker compose -f "$EZBASE_SRC/fleet/docker-compose.yml" -p ezbase-fleet up -d --build
+    printf "\nezbase fleet: http://ezbase.localhost:7490\n"
+    ;;
   backup)
     cmd_backup "${@:2}"
     ;;
@@ -126,6 +130,7 @@ case "$1" in
   *)
     printf "Usage: ez <command>\n\n"
     printf "  up | down | down --nuke | logs\n\n"
+    printf "  fleet              Every ezbase on this machine + ~/.ezbase/fleet.json → http://ezbase.localhost:7490\n\n"
     printf "  backup [dest]      Back up everything\n"
     printf "      ez backup                        → ./backup-<timestamp>.tar.gz\n"
     printf "      ez backup ~/backups/             → into that folder\n"

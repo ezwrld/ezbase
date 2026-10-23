@@ -102,6 +102,8 @@ https://raw.githubusercontent.com/ezwrld/ezbase/master/docs/skill.md
 - [docs/RULES.md](docs/RULES.md) — access rules and security model
 - [docs/OAUTH-PROVIDERS.md](docs/OAUTH-PROVIDERS.md) — acquiring OAuth provider credentials
 - [docs/BACKUPS.md](docs/BACKUPS.md) — backup and restore
+- [fleet/](fleet/README.md) — one page for every instance you run (`ez fleet`)
+- [docs/PLAN.md](docs/PLAN.md) — what's next and how ezbase scales past one box
 - [CHANGELOG.md](CHANGELOG.md) — releases and upgrade considerations
 
 ## Development

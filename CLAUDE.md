@@ -21,6 +21,7 @@ Detailed specs and plans live in `docs/`:
 | `docs/CI-CD.md` | GitHub Actions workflows (OIDC publishing, Docker builds) |
 | `docs/skill.md` | **Canonical SDK & integration reference** — the one file for building with ezbase |
 | `docs/ROADMAP.md` | Architecture decisions and roadmap |
+| `docs/PLAN.md` | **Master plan** — order of work, scaling stages, ezbase Cloud |
 
 ## What's built
 
@@ -38,7 +39,8 @@ Detailed specs and plans live in `docs/`:
 - **Analytics** — built-in request analytics: every API call classified + aggregated into per-minute buckets (internal `_ezbase_metrics` table, 14-day retention), admin endpoints for summary/timeseries/live SSE feed, Activity page in console
 - **Console** — React + Vite + Tailwind SPA with database selector, live-updating document tables, Activity dashboard (stat tiles, requests/min chart, top collections, live request feed), rules editor, and storage browser
 - **SDK** — zero-dependency TypeScript client, works in Node/Bun/Deno/browsers
-- **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`, `ez backup`, `ez restore`
+- **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`, `ez backup`, `ez restore`, `ez fleet`
+- **Fleet** — `fleet/`: one local page for every ezbase instance (Docker-discovered + `~/.ezbase/fleet.json`), health/version drift/traffic/errors/size/backups, per-instance console proxy with the admin key added server-side
 - **Distribution setup** — Dockerfile (all-in-one image), GitHub Actions for npm + GHCR publishing
 
 ## What's not built yet
@@ -92,6 +94,7 @@ Verify: `curl http://localhost:7003/api/health`
 | `console/` | React + Vite admin dashboard |
 | `Dockerfile` | All-in-one production image |
 | `docker-compose.yml` | Dev stack (postgres, server, console, nginx) |
+| `fleet/` | Local control panel for every instance (`ez fleet` → http://ezbase.localhost:7490); remote instances in `~/.ezbase/fleet.json` |
 
 ## API (all under `/api`)
 
