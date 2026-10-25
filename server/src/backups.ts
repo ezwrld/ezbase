@@ -7,7 +7,7 @@ import { once } from 'node:events'
 import { Readable } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 import tar from 'tar-stream'
-import { sql, ensureCollection, qualifiedTable, validateDatabaseName, validateCollectionName } from './db.js'
+import { sql, ensureCollection, qualifiedTable, qualifiedTableName, validateDatabaseName, validateCollectionName } from './db.js'
 import { publishChange } from './pubsub.js'
 import { getRules, isRulesReadonly, writeRules, validateRules, type RulesFile } from './rules.js'
 import { getAuthFile, isAuthSettingsReadonly, validateAuthFile, writeAuthFile, type AuthFile } from './auth-settings.js'
@@ -488,7 +488,7 @@ async function insertDocBatch(
     })
     .join(', ')
   const query =
-    `INSERT INTO db_${database}.col_${collection} (id, data, created_at, updated_at) ` +
+    `INSERT INTO ${qualifiedTableName(database, collection)} (id, data, created_at, updated_at) ` +
     `VALUES ${values} ${CONFLICT_CLAUSE[conflict]} RETURNING id`
   const rows = await trx.unsafe(query, params as any[])
   return rows.length

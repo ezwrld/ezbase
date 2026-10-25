@@ -9,7 +9,31 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 - Compatibility or behavior changes are called out in that release's **Upgrade considerations** instead of being encoded in the version number.
 - Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
-Pin a release tag (`ghcr.io/ezwrld/ezbase:1.11`) to control when you take upgrades; `:latest` tracks the newest release.
+Pin a release tag (`ghcr.io/ezwrld/ezbase:1.12`) to control when you take upgrades; `:latest` tracks the newest release.
+
+---
+
+## v1.12 — 2026-10-25
+
+Collections with capital letters in their names work everywhere.
+
+### Fixed
+- **Listing, querying, aggregating, and restoring a collection whose name has capitals (`bookingFormVisits`) failed** with `relation "db_default.col_bookingformvisits" does not exist`. Hand-built SQL used the name unquoted, so Postgres lowercased it while the table had been created with its real case. Writes and single-document reads were unaffected, so data kept accumulating; backups contained it but could not be restored. Lists have failed since 1.7; restore since backups shipped.
+- Automatic and declared index builds on such collections failed the same way; they now build.
+- A failed automatic index build now drops its invalid index (the drop named the index without its schema and never matched).
+
+### Upgrade considerations
+- None. No data changes; tables created by any earlier version are read as-is.
+- Backups taken by earlier versions restore on 1.12, including their capitalized collections.
+
+### Agent prompt
+```
+Update this project to ezbase 1.12 (image ghcr.io/ezwrld/ezbase:1.12). GET {ezbase}/api/health must report "1.12".
+
+1. Take a backup first (POST /api/backups with the admin key) and copy it off the host.
+2. Pin the image and redeploy.
+3. If any collection name has capital letters, list it once with the admin key; it must return documents instead of a 500.
+```
 
 ---
 

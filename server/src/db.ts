@@ -140,11 +140,18 @@ export function qualifiedTable(database: string, collection: string) {
   return sql(`db_${database}.col_${collection}`)
 }
 
-/** Table name for hand-built SQL; validates both names since they are interpolated. */
-export function qualifiedTableName(database: string, collection: string): string {
-  const err = validateDatabaseName(database) || validateCollectionName(collection)
+/** Quoted schema for hand-built SQL. Names keep their case (bookingFormVisits), so they must be quoted. */
+export function schemaName(database: string): string {
+  const err = validateDatabaseName(database)
   if (err) throw new Error(err)
-  return `db_${database}.col_${collection}`
+  return `"db_${database}"`
+}
+
+/** Quoted table name for hand-built SQL; validates both names since they are interpolated. */
+export function qualifiedTableName(database: string, collection: string): string {
+  const err = validateCollectionName(collection)
+  if (err) throw new Error(err)
+  return `${schemaName(database)}."col_${collection}"`
 }
 
 const FIELD_PART_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/
@@ -254,7 +261,7 @@ export async function migrateToSchemas() {
       WHERE table_schema = 'db_default' AND table_name = ${tableName}
     `
     if (dest.length === 0) {
-      await sql.unsafe(`ALTER TABLE public.${tableName} SET SCHEMA db_default`)
+      await sql.unsafe(`ALTER TABLE public."${tableName}" SET SCHEMA db_default`)
       console.log(`  moved ${tableName} → db_default`)
     }
   }
@@ -287,7 +294,7 @@ function jsonExpr(field: string): string {
  * writes to a live table; the triggering query runs without waiting. ANALYZE
  * afterwards gives the planner statistics for the new expression.
  */
-function createIndexOnce(name: string, table: string, columns: string, partial: string | null) {
+function createIndexOnce(name: string, database: string, table: string, columns: string, partial: string | null) {
   if (jsonIndexes.has(name) || pendingJsonIndexes.has(name)) return
   const pending = (async () => {
     try {
@@ -301,7 +308,7 @@ function createIndexOnce(name: string, table: string, columns: string, partial: 
     } catch (err) {
       console.error(`failed to create index ${name}:`, err)
       // A failed concurrent build leaves an invalid index that IF NOT EXISTS would keep forever.
-      await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`).catch(() => {})
+      await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${schemaName(database)}.${name}`).catch(() => {})
     } finally {
       jsonIndexes.add(name)
     }
@@ -360,7 +367,7 @@ export async function ensureQueryIndexes(
   if (err) throw new Error(err)
 
   await ensureCollection(database, collection)
-  const table = `db_${database}.col_${collection}`
+  const table = qualifiedTableName(database, collection)
 
   const covered = new Set<string>()
   const eq = hints.eqFields.slice(0, 3)
@@ -368,7 +375,7 @@ export async function ensureQueryIndexes(
   if (eq.length > 0) {
     const composite = indexDefinition(database, collection, eq, orderField)
     if (composite?.columns.includes(',')) {
-      createIndexOnce(composite.name, table, composite.columns, composite.partial)
+      createIndexOnce(composite.name, database, table, composite.columns, composite.partial)
       eq.forEach((field) => covered.add(field))
       if (orderField && orderField !== 'created_at' && orderField !== 'updated_at') covered.add(orderField)
     }
@@ -377,7 +384,7 @@ export async function ensureQueryIndexes(
   for (const field of hints.jsonFields) {
     if (covered.has(field)) continue
     const expr = jsonExpr(field)
-    createIndexOnce(sqlIndexName(database, collection, 'j', [field]), table, expr, `${expr} IS NOT NULL`)
+    createIndexOnce(sqlIndexName(database, collection, 'j', [field]), database, table, expr, `${expr} IS NOT NULL`)
   }
 }
 

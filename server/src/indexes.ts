@@ -3,7 +3,9 @@ import {
   collectionExists,
   indexDefinition,
   onCollectionCreated,
+  qualifiedTableName,
   sanitizeField,
+  schemaName,
   sql,
   validateCollectionName,
   type IndexDefinition,
@@ -93,7 +95,8 @@ async function applyTo(database: string, collection: string) {
   if (!(await collectionExists(database, collection))) return
   const schema = `db_${database}`
   const tableName = `col_${collection}`
-  const table = `${schema}.${tableName}`
+  const quotedSchema = schemaName(database)
+  const table = qualifiedTableName(database, collection)
   const wanted = definitionsFor(database, collection)
   const existing = await sql<{ name: string; valid: boolean; note: string | null }[]>`
     SELECT c.relname AS name, i.indisvalid AS valid, obj_description(c.oid, 'pg_class') AS note
@@ -108,23 +111,23 @@ async function applyTo(database: string, collection: string) {
   for (const def of wanted.values()) {
     const row = byName.get(def.name)
     try {
-      if (row && !row.valid) await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${schema}.${def.name}`)
+      if (row && !row.valid) await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${quotedSchema}.${def.name}`)
       if (!row || !row.valid) {
         const t0 = Date.now()
         await sql.unsafe(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${def.name} ON ${table} (${def.columns})${def.partial ? ` WHERE ${def.partial}` : ''}`)
         await sql.unsafe(`ANALYZE ${table}`)
         console.log(`ezbase: built declared index ${def.name} in ${Date.now() - t0}ms`)
       }
-      if (row?.note !== DECLARED) await sql.unsafe(`COMMENT ON INDEX ${schema}.${def.name} IS '${DECLARED}'`)
+      if (row?.note !== DECLARED) await sql.unsafe(`COMMENT ON INDEX ${quotedSchema}.${def.name} IS '${DECLARED}'`)
     } catch (error) {
       console.error(`ezbase: declared index ${def.name} failed:`, error)
-      await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${schema}.${def.name}`).catch(() => {})
+      await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${quotedSchema}.${def.name}`).catch(() => {})
     }
   }
 
   for (const row of existing) {
     if (row.note !== DECLARED || wanted.has(row.name)) continue
-    await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${schema}.${row.name}`)
+    await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${quotedSchema}.${row.name}`)
     console.log(`ezbase: dropped ${row.name}, no longer declared`)
   }
 }
