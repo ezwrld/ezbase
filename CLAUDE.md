@@ -159,6 +159,9 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 
 ## Database
 
+Collection and database names keep their case (`bookingFormVisits`). Hand-built SQL must name tables and schemas through `qualifiedTableName` / `schemaName` (quoted) or `qualifiedTable` (postgres.js helper); never interpolate `db_${database}.col_${collection}` yourself. CI fails on that pattern.
+
+
 Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with btrees on `created_at`/`updated_at` and auto btrees on the JSON expressions admin queries use (one per query shape, built concurrently). With `EZBASE_AUTO_INDEX=false`, queries use `@>` containment and each table gets a GIN on `data` instead. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
 
 Collection permissions are defined in `/data/rules.json` (one file per instance, covers all databases). Format:

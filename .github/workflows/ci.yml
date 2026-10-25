@@ -25,6 +25,13 @@ jobs:
         with:
           node-version: 24
 
+      - name: Table names are quoted
+        run: |
+          if grep -rnE 'db_\$\{\w+\}\.' server/src | grep -v 'return sql(`db_'; then
+            echo "Build table names with qualifiedTable / qualifiedTableName / schemaName. Postgres lowercases unquoted names, so bookingFormVisits would not be found."
+            exit 1
+          fi
+
       - name: Install, bundle, and test server
         working-directory: server
         run: |
