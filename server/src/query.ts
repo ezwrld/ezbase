@@ -279,7 +279,14 @@ function selectClause(fields?: string[]): string {
   ), '{}'::jsonb) AS data, created_at, updated_at`
 }
 
-function resolveLimit(limit: string | number | undefined): number {
+type RowCap = { rows: number; strict: boolean }
+
+/**
+ * The row cap for a request. `strict` means the caller asked for every match (no
+ * limit, or more than EZBASE_MAX_LIMIT): the query fetches one extra row so a cut
+ * can be refused instead of silently returning a partial result.
+ */
+function resolveLimit(limit: string | number | undefined): RowCap {
   const DEFAULT_LIMIT = parseInt(process.env.EZBASE_DEFAULT_LIMIT || '100', 10)
   const MAX_LIMIT = parseInt(process.env.EZBASE_MAX_LIMIT || '10000', 10)
   if (limit !== undefined && limit !== '') {
@@ -287,9 +294,21 @@ function resolveLimit(limit: string | number | undefined): number {
     if (!Number.isInteger(n) || n <= 0) {
       throw new Error('limit must be a positive integer')
     }
-    return Math.min(n, MAX_LIMIT)
+    return n > MAX_LIMIT ? { rows: MAX_LIMIT, strict: true } : { rows: n, strict: false }
   }
-  return DEFAULT_LIMIT
+  return { rows: DEFAULT_LIMIT, strict: true }
+}
+
+function pushLimit(params: unknown[], cap: RowCap): string {
+  params.push(cap.strict ? cap.rows + 1 : cap.rows)
+  return ` LIMIT $${params.length}`
+}
+
+/** The 400 message when more rows match than a strict cap allows, or null when the result is complete. */
+export function truncationError(rowCount: number, cap: number | null): string | null {
+  if (cap === null || rowCount <= cap) return null
+  const max = parseInt(process.env.EZBASE_MAX_LIMIT || '10000', 10)
+  return `More than ${cap} documents match. Pass limit (at most ${max}) and page with offset, or narrow the where clause.`
 }
 
 function appendOffset(params: unknown[], offset: string | number | undefined): string {
@@ -312,7 +331,7 @@ export function buildQuerySql(
   isAdmin = false,
   useJsonbPredicates = autoIndexEnabled(),
   subqueries?: SubqueryAccess
-): { query: string; params: unknown[] } {
+): { query: string; params: unknown[]; cap: number | null } {
   void isAdmin
   const params: unknown[] = []
   const predicates = wherePredicates(parseWhere(whereParam), docFilters, params, {
@@ -331,11 +350,11 @@ export function buildQuerySql(
     query += ' ORDER BY created_at DESC'
   }
 
-  params.push(resolveLimit(limitParam))
-  query += ` LIMIT $${params.length}`
+  const cap = resolveLimit(limitParam)
+  query += pushLimit(params, cap)
   query += appendOffset(params, offsetParam)
 
-  return { query, params }
+  return { query, params, cap: cap.strict ? cap.rows : null }
 }
 
 async function ensureWhereIndexes(
@@ -369,7 +388,7 @@ export async function prepareQuery(
   fields?: string[],
   isAdmin = false,
   subqueries?: SubqueryAccess
-): Promise<{ query: string; params: unknown[]; index: string }> {
+): Promise<{ query: string; params: unknown[]; index: string; cap: number | null }> {
   const useJsonb = autoIndexEnabled()
   const index = describeIndexUse(collection, queryShape(parseWhere(whereParam), docFilters, orderBy, 'created'))
   if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
@@ -459,7 +478,7 @@ export function buildAggregateSql(
   docFilters?: AppliedFilter[],
   useJsonbPredicates = autoIndexEnabled(),
   subqueries?: SubqueryAccess
-): { query: string; params: unknown[] } {
+): { query: string; params: unknown[]; cap: number | null } {
   const params: unknown[] = []
   const groupBy = req.groupBy ?? []
   const outputs = Object.entries(req.select).map(([name, spec]) => ({ name, expr: aggregateExpr(spec) }))
@@ -496,11 +515,11 @@ export function buildAggregateSql(
     query += ` ORDER BY ${target} ${dir} NULLS LAST`
   }
 
-  params.push(resolveLimit(req.limit))
-  query += ` LIMIT $${params.length}`
+  const cap = resolveLimit(req.limit)
+  query += pushLimit(params, cap)
   query += appendOffset(params, req.offset)
 
-  return { query, params }
+  return { query, params, cap: cap.strict ? cap.rows : null }
 }
 
 export async function prepareAggregate(
@@ -510,7 +529,7 @@ export async function prepareAggregate(
   docFilters?: AppliedFilter[],
   isAdmin = false,
   subqueries?: SubqueryAccess
-): Promise<{ query: string; params: unknown[]; index: string }> {
+): Promise<{ query: string; params: unknown[]; index: string; cap: number | null }> {
   const index = describeIndexUse(collection, queryShape(req.where ?? [], docFilters, undefined, null))
   if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
     await ensureWhereIndexes(database, req.where ?? [], collection, undefined, docFilters, subqueries, false)

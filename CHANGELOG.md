@@ -9,7 +9,38 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 - Compatibility or behavior changes are called out in that release's **Upgrade considerations** instead of being encoded in the version number.
 - Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
-Pin a release tag (`ghcr.io/ezwrld/ezbase:1.12`) to control when you take upgrades; `:latest` tracks the newest release.
+Pin a release tag (`ghcr.io/ezwrld/ezbase:1.13`) to control when you take upgrades; `:latest` tracks the newest release.
+
+---
+
+## v1.13 — 2026-10-26
+
+No silent partial results, and a restore point on every upgrade.
+
+### Changed
+- **A query never returns a silently cut result.** Without a `limit`, a list, `onSnapshot`, or aggregate returns every match when there are at most 100 (`EZBASE_DEFAULT_LIMIT`) and a **400** when there are more: `More than 100 documents match. Pass limit (at most 10000) and page with offset, or narrow the where clause.` A `limit` above 10000 (`EZBASE_MAX_LIMIT`) is a 400 when more than 10000 match, instead of quietly returning 10000. An explicit `limit` up to the max behaves as before. Since 1.7 these cases returned the first 100 / 10000 rows with no signal: on one production app, a 44,355-row ledger read would have come back as 100 rows.
+- A realtime subscription checks its first snapshot before streaming, so the 400 carries the message. If a live subscription later grows past its cap, it receives an `error` event and closes; the SDK passes the message to `onSnapshot`'s error callback.
+- `GET` of a document that does not exist (404) no longer counts as an error in analytics; it is an answer.
+- Console: the document table asks for the newest 100 explicitly, and the header shows the collection's real document count (it showed the loaded row count, e.g. "100 documents" for 716,622).
+
+### Added
+- **Restore point on upgrade.** The first boot of a new release on a volume with data writes a full backup `backup-<timestamp>-upgrade-<version>.tar.gz` in the background (2.67M documents: 143 MB in 108 s while serving) and records the version in `.backups/.version`. Reboots of the same release do nothing; the newest three upgrade backups are kept. A failed attempt retries on the next boot.
+
+SDK `@ezwrld/ezbase` 1.8.0: realtime connection errors carry the server's message.
+
+### Upgrade considerations
+- Code that lists, subscribes to, or aggregates more than 100 matches **without** `limit` now gets a 400 where it used to get the first 100 silently. Pass the `limit` you mean (up to 10000) and page with `offset`. Instances that set `EZBASE_DEFAULT_LIMIT` higher keep returning up to that many without error.
+- Booting 1.13 the first time writes a full backup to the data volume. Allow disk for one archive (roughly the compressed size of your data plus files).
+
+### Agent prompt
+```
+Update this project to ezbase 1.13 (image ghcr.io/ezwrld/ezbase:1.13, SDK @ezwrld/ezbase 1.8.0). GET {ezbase}/api/health must report "1.13".
+
+1. Before deploying, find every list/query `.get()`, `onSnapshot`, `.aggregate()`, and raw `GET /collections/:col` or `/sse` call without a `limit`, and every `limit` above 10000. For each, check the collection's real size (GET /api/collections/:col/stats with the admin key). If it can match more than 100 (or 10000) documents, pass the limit you actually want and page with offset — or keep reading everything by setting EZBASE_DEFAULT_LIMIT / EZBASE_MAX_LIMIT on the ezbase container. Do not leave a call that relied on the silent cut.
+2. Confirm the data volume has free space for one full backup.
+3. Pin the image and deploy. The server log shows `restore point backup-…-upgrade-1.13.tar.gz` within a few minutes; copy that file off the host.
+4. Watch for 400s mentioning "documents match" in the app's logs for a day and fix each call site.
+```
 
 ---
 

@@ -106,7 +106,8 @@ function sseConnect(
       })
 
       if (!res.ok || !res.body) {
-        throw new Error(`SSE connect failed: ${res.status}`)
+        const body = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(body?.error || `SSE connect failed: ${res.status}`)
       }
 
       const reader = res.body.getReader()
@@ -131,6 +132,11 @@ function sseConnect(
           } else if (line === '' || line === '\r') {
             if (eventType === 'snapshot' && dataLines.length > 0) {
               onSnapshot(dataLines.join('\n'))
+            } else if (eventType === 'error' && dataLines.length > 0) {
+              const message = (JSON.parse(dataLines.join('\n')) as { error?: string }).error
+              controller.abort()
+              onError?.(new Error(message || 'Subscription ended'))
+              return
             }
             eventType = ''
             dataLines = []

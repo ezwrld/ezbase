@@ -79,7 +79,8 @@ export function recordRequest(event: RequestEvent) {
     buckets.set(key, b)
   }
   b.count++
-  if (event.status >= 400) b.errors++
+  // A GET for a document that does not exist is an answer, not a failure.
+  if (event.status >= 400 && !(event.status === 404 && event.method === 'GET')) b.errors++
   b.totalMs += event.ms
 
   liveRing.push(event)
