@@ -12,6 +12,7 @@ import {
   parseWhere,
   prepareAggregate,
   prepareQuery,
+  truncationError,
   subqueryCollections,
   type SubqueryAccess,
   type WhereClause,
@@ -237,37 +238,47 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
     }
 
+    const snapshot = async (): Promise<{ docs: ReturnType<typeof formatDoc>[] } | { error: string }> => {
+      if (!(await collectionExists(database, collection))) return { docs: [] }
+      const { query, params, cap } = await prepareQuery(
+        database,
+        collection,
+        whereParam,
+        orderBy,
+        order,
+        limitParam,
+        docFilters,
+        offsetParam,
+        fields,
+        (c.get('role') || 'anonymous') === 'admin',
+        subqueries
+      )
+      const rows = await sql.unsafe(query, params as any[])
+      const truncated = truncationError(rows.length, cap)
+      return truncated ? { error: truncated } : { docs: rows.map(formatDoc) }
+    }
+
+    const first = await snapshot()
+    if ('error' in first) return c.json({ error: first.error }, 400)
+
     return streamSSE(c, async (stream) => {
-      const sendSnapshot = async () => {
-        if (!(await collectionExists(database, collection))) {
-          await stream.writeSSE({ event: 'snapshot', data: '[]' })
+      let closed = false
+      const send = async (result: Awaited<ReturnType<typeof snapshot>>) => {
+        if ('error' in result) {
+          closed = true
+          await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: result.error }) })
+          await stream.close()
           return
         }
-        const { query, params } = await prepareQuery(
-          database,
-          collection,
-          whereParam,
-          orderBy,
-          order,
-          limitParam,
-          docFilters,
-          offsetParam,
-          fields,
-          (c.get('role') || 'anonymous') === 'admin',
-          subqueries
-        )
-        const rows = await sql.unsafe(query, params as any[])
-        await stream.writeSSE({
-          event: 'snapshot',
-          data: JSON.stringify(rows.map(formatDoc)),
-        })
+        await stream.writeSSE({ event: 'snapshot', data: JSON.stringify(result.docs) })
       }
 
-      await sendSnapshot()
+      await send(first)
 
       const unsub = await subscribe(database, collection, async () => {
+        if (closed) return
         try {
-          await sendSnapshot()
+          await send(await snapshot())
         } catch {}
       })
 
@@ -358,10 +369,11 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     let query: string
     let params: unknown[]
     let index: string
+    let cap: number | null
     try {
       const resolved = await resolveSubqueries(c, database, parseWhere(c.req.query('where')))
       if (!resolved.ok) return resolved.response
-      ;({ query, params, index } = await prepareQuery(
+      ;({ query, params, index, cap } = await prepareQuery(
         database,
         collection,
         c.req.query('where'),
@@ -378,6 +390,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
     }
     const rows = await runReported(c, query, params, index, () => sql.unsafe(query, params as any[]))
+    const truncated = truncationError(rows.length, cap)
+    if (truncated) return c.json({ error: truncated }, 400)
     return c.json(rows.map(formatDoc))
   })
 
@@ -393,12 +407,13 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     let params: unknown[]
     let groupBy: string[]
     let index: string
+    let cap: number | null
     try {
       const req = parseAggregate(parsed.body)
       groupBy = req.groupBy ?? []
       const resolved = await resolveSubqueries(c, database, req.where ?? [])
       if (!resolved.ok) return resolved.response
-      ;({ query, params, index } = await prepareAggregate(
+      ;({ query, params, index, cap } = await prepareAggregate(
         database,
         collection,
         req,
@@ -414,6 +429,8 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         await tx.unsafe(`SET LOCAL statement_timeout = ${AGGREGATE_TIMEOUT_MS}`)
         return tx.unsafe(query, params as any[])
       }))
+      const truncated = truncationError(rows.length, cap)
+      if (truncated) return c.json({ error: truncated.replace('documents match', 'groups match') }, 400)
       return c.json(rows.map((row) => formatAggregateRow(row, groupBy)))
     } catch (error) {
       if ((error as { code?: string }).code === '57014') {

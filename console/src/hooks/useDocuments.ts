@@ -7,11 +7,13 @@ export interface EzDocument {
   updated: number
 }
 
+/** The table shows the newest documents; the header count comes from collection stats. */
+const PAGE_SIZE = 100
+
 export function useDocuments(database: string, collection: string | null, adminKey: string) {
   const [documents, setDocuments] = useState<EzDocument[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [totalCount, setTotalCount] = useState(0)
 
   const basePath = database === 'default' ? '/api' : `/api/db/${encodeURIComponent(database)}`
 
@@ -20,7 +22,6 @@ export function useDocuments(database: string, collection: string | null, adminK
       setDocuments([])
       setLoading(false)
       setError(null)
-      setTotalCount(0)
       return
     }
 
@@ -29,6 +30,7 @@ export function useDocuments(database: string, collection: string | null, adminK
 
     const params = new URLSearchParams({
       token: adminKey,
+      limit: String(PAGE_SIZE),
     })
     const url = `${basePath}/collections/${encodeURIComponent(collection)}/sse?${params}`
     const es = new EventSource(url)
@@ -37,7 +39,6 @@ export function useDocuments(database: string, collection: string | null, adminK
       try {
         const docs: EzDocument[] = JSON.parse(e.data)
         setDocuments(docs)
-        setTotalCount(docs.length)
         setError(null)
       } catch {
         setError('Failed to parse snapshot')
@@ -62,6 +63,5 @@ export function useDocuments(database: string, collection: string | null, adminK
     documents,
     loading,
     error,
-    totalCount,
   }
 }

@@ -42,9 +42,10 @@ export default function App() {
   // Hooks are called unconditionally (rules of hooks), but only used when authenticated
   const { databases, loading: dbLoading } = useDatabases(adminKey || '')
   const { collections, loading: colLoading, error: colError, refresh } = useCollections(selectedDb, adminKey || '')
-  const { documents, loading: docLoading, error: docError, totalCount } = useDocuments(selectedDb, selected, adminKey || '')
+  const { documents, loading: docLoading, error: docError } = useDocuments(selectedDb, selected, adminKey || '')
   const stats = useCollectionStats(selectedDb, collections, adminKey || '')
   const statsMap = new Map(stats.map((s) => [s.name, s]))
+  const totalCount = selected ? statsMap.get(selected)?.count ?? documents.length : 0
 
   async function handleKeySubmit(e: React.FormEvent) {
     e.preventDefault()

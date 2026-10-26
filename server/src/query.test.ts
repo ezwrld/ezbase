@@ -157,24 +157,6 @@ describe('buildQuerySql', () => {
     expect(query).toContain(`data->'status' IS DISTINCT FROM to_jsonb($1::text)`)
   })
 
-  test('defaults list size to 100 even for admin', () => {
-    const { query, params } = buildQuerySql(
-      'default',
-      'events',
-      undefined,
-      'created',
-      'desc',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      true,
-      true
-    )
-    expect(query).toContain('LIMIT')
-    expect(params.at(-1)).toBe(100)
-  })
-
   test('rejects non-positive limit', () => {
     expect(() =>
       buildQuerySql(

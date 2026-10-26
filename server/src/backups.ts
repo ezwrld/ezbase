@@ -172,7 +172,7 @@ async function streamAuthTableJsonl(ws: fs.WriteStream, table: string) {
   }
 }
 
-export async function createBackup(opts: { type?: BackupType; database?: string; collection?: string }) {
+export async function createBackup(opts: { type?: BackupType; database?: string; collection?: string; label?: string }) {
   ensureDirs()
 
   const type: BackupType = opts.type || 'full'
@@ -249,6 +249,7 @@ export async function createBackup(opts: { type?: BackupType; database?: string;
     (database ? `-${database}` : '') +
     (collection ? `-${collection}` : '') +
     (type !== 'full' ? `-${type}` : '') +
+    (opts.label ? `-${opts.label}` : '') +
     '.tar.gz'
   const finalPath = path.join(BACKUP_PATH, name)
   const partialPath = path.join(TMP_PATH, name + '.partial')
@@ -804,6 +805,34 @@ backupRoutes.post('/backups', async (c) => {
     return c.json({ error: err.message }, 400)
   }
 })
+
+const VERSION_MARKER = `${BACKUP_PATH}/.version`
+const UPGRADE_BACKUPS_KEPT = 3
+
+/**
+ * The first boot of a new release on existing data takes a full backup, so every
+ * upgrade leaves a restore point on the volume. Runs in the background; a failed
+ * attempt leaves the marker unchanged and retries on the next boot.
+ */
+export async function backupOnUpgrade(version: string) {
+  if (version === 'dev') return
+  ensureDirs()
+  const previous = fs.existsSync(VERSION_MARKER) ? fs.readFileSync(VERSION_MARKER, 'utf-8').trim() : null
+  if (previous === version) return
+  const tables = await sql`
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema LIKE 'db\\_%' ESCAPE '\\' AND table_name LIKE 'col\\_%' ESCAPE '\\'
+    LIMIT 1
+  `
+  if (tables.length > 0) {
+    const t0 = Date.now()
+    const backup = await createBackup({ type: 'full', label: `upgrade-${version}` })
+    console.log(`ezbase: ${previous ?? 'earlier release'} → ${version}; restore point ${backup.name} (${backup.size} bytes, ${Date.now() - t0}ms)`)
+    const upgrades = fs.readdirSync(BACKUP_PATH).filter((n) => BACKUP_NAME_RE.test(n) && n.includes('-upgrade-')).sort().reverse()
+    for (const old of upgrades.slice(UPGRADE_BACKUPS_KEPT)) fs.unlinkSync(path.join(BACKUP_PATH, old))
+  }
+  fs.writeFileSync(VERSION_MARKER, `${version}\n`)
+}
 
 // List backups
 backupRoutes.get('/backups', async (c) => {
