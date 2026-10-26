@@ -9,7 +9,24 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 - Compatibility or behavior changes are called out in that release's **Upgrade considerations** instead of being encoded in the version number.
 - Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
-Pin a release tag (`ghcr.io/ezwrld/ezbase:1.14`) to control when you take upgrades; `:latest` tracks the newest release.
+Pin a release tag (`ghcr.io/ezwrld/ezbase:1.15`) to control when you take upgrades; `:latest` tracks the newest release.
+
+---
+
+## v1.15 — 2026-10-26
+
+Upgrade restore points skip stored file bytes.
+
+### Changed
+- The restore point written on a release's first boot keeps documents, auth, rules, and file metadata, but not the bytes of stored files: an upgrade changes the database and never touches the file tree. On a production instance with 958 stored files it dropped from 518,734,437 bytes / 21 s to 63,497,756 bytes / 5.8 s; an instance holding 35 GB of video no longer writes a 35 GB archive per upgrade. Manual and API backups are unchanged and include file bytes.
+
+### Upgrade considerations
+- None.
+
+### Agent prompt
+```
+Update this project to ezbase 1.15 (image ghcr.io/ezwrld/ezbase:1.15). GET {ezbase}/api/health must report "1.15". No code changes.
+```
 
 ---
 

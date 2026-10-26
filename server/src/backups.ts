@@ -33,7 +33,7 @@ interface BackupManifest {
   createdAt: string
   type: BackupType
   scope: { database?: string; collection?: string }
-  includes: { documents: boolean; auth: boolean; storage: boolean; rules: boolean }
+  includes: { documents: boolean; auth: boolean; storage: boolean; rules: boolean; fileContents?: boolean }
   stats: {
     databases: Record<string, { collections: Record<string, { docCount: number; sizeBytes: number }> }>
     auth?: { userCount: number }
@@ -172,7 +172,7 @@ async function streamAuthTableJsonl(ws: fs.WriteStream, table: string) {
   }
 }
 
-export async function createBackup(opts: { type?: BackupType; database?: string; collection?: string; label?: string }) {
+export async function createBackup(opts: { type?: BackupType; database?: string; collection?: string; label?: string; fileContents?: boolean }) {
   ensureDirs()
 
   const type: BackupType = opts.type || 'full'
@@ -197,6 +197,7 @@ export async function createBackup(opts: { type?: BackupType; database?: string;
     auth: type === 'auth' || (type === 'full' && !scoped),
     storage: type === 'storage' || (type === 'full' && !scoped),
     rules: type === 'full' && !scoped,
+    ...(opts.fileContents === false ? { fileContents: false } : {}),
   }
 
   // ── Gather stats + build manifest ───────────────────────────
@@ -309,12 +310,14 @@ export async function createBackup(opts: { type?: BackupType; database?: string;
         }
       })
 
-      const cursor = sql`SELECT path FROM _ezbase_files`.cursor(500)
-      for await (const rows of cursor) {
-        for (const row of rows) {
-          const diskPath = path.join(STORAGE_PATH, row.path as string)
-          if (fs.existsSync(diskPath)) {
-            await addFileEntry(pack, `storage/${row.path}`, diskPath)
+      if (includes.fileContents !== false) {
+        const cursor = sql`SELECT path FROM _ezbase_files`.cursor(500)
+        for await (const rows of cursor) {
+          for (const row of rows) {
+            const diskPath = path.join(STORAGE_PATH, row.path as string)
+            if (fs.existsSync(diskPath)) {
+              await addFileEntry(pack, `storage/${row.path}`, diskPath)
+            }
           }
         }
       }
@@ -810,9 +813,10 @@ const VERSION_MARKER = `${BACKUP_PATH}/.version`
 const UPGRADE_BACKUPS_KEPT = 3
 
 /**
- * The first boot of a new release on existing data takes a full backup, so every
- * upgrade leaves a restore point on the volume. Runs in the background; a failed
- * attempt leaves the marker unchanged and retries on the next boot.
+ * The first boot of a new release on existing data takes a backup, so every upgrade
+ * leaves a restore point on the volume. An upgrade changes the database, never the
+ * stored files, so it keeps file metadata and leaves the file bytes on disk. Runs in
+ * the background; a failed attempt leaves the marker unchanged and retries next boot.
  */
 export async function backupOnUpgrade(version: string) {
   if (version === 'dev') return
@@ -826,7 +830,7 @@ export async function backupOnUpgrade(version: string) {
   `
   if (tables.length > 0) {
     const t0 = Date.now()
-    const backup = await createBackup({ type: 'full', label: `upgrade-${version}` })
+    const backup = await createBackup({ type: 'full', label: `upgrade-${version}`, fileContents: false })
     console.log(`ezbase: ${previous ?? 'earlier release'} → ${version}; restore point ${backup.name} (${backup.size} bytes, ${Date.now() - t0}ms)`)
     const upgrades = fs.readdirSync(BACKUP_PATH).filter((n) => BACKUP_NAME_RE.test(n) && n.includes('-upgrade-')).sort().reverse()
     for (const old of upgrades.slice(UPGRADE_BACKUPS_KEPT)) fs.unlinkSync(path.join(BACKUP_PATH, old))
