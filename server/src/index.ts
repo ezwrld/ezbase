@@ -12,7 +12,7 @@ import { auth, initAuth, rebuildAuth } from './auth.js'
 import { loadRules, watchRules, rulesRoutes, legacyPermissionRoutes, dbLegacyPermissionRoutes } from './rules.js'
 import { watchAuthSettings } from './auth-settings.js'
 import { storageRoutes } from './storage.js'
-import { backupOnUpgrade, backupRoutes } from './backups.js'
+import { backupRoutes } from './backups.js'
 import { analyticsMiddleware, analyticsRoutes, initAnalytics } from './analytics.js'
 
 const { basePath } = getPublicUrl()
@@ -82,7 +82,6 @@ await loadIndexes()
 watchIndexes()
 watchAuthSettings(() => rebuildAuth())
 await Promise.all([init(), initPubSub(), initAuth(), initAnalytics()])
-backupOnUpgrade(process.env.EZBASE_VERSION || 'dev').catch((err) => console.error('ezbase: upgrade backup failed', err))
 
 console.log(`ezbase running on :${port}`)
 
