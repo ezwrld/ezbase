@@ -1,8 +1,7 @@
 # Backups & Restoration
 
-Status: **Phase 1 built** — manual backup + restore via API and CLI, with granular targets, query-filtered restore, and conflict modes. Scheduling, console UI, and S3 are future phases.
+Status: **Phase 1 built** — manual backup + restore via API and CLI, with granular targets, query-filtered restore, and conflict modes. Scheduling, console UI, restore points, and S3 are future phases.
 
-**Every upgrade leaves a restore point.** The first boot of a new release on a volume with data writes a backup named `backup-<timestamp>-upgrade-<version>.tar.gz` in the background — documents, auth, rules, and file metadata, but not the stored file bytes, which an upgrade never touches and records the version in `.backups/.version`; reboots of the same release do nothing. The newest three upgrade backups are kept. It sits on the same volume as the data — copy it off the host for disaster recovery.
 
 ## Problem
 

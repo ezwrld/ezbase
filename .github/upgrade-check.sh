@@ -117,13 +117,6 @@ check "existing user signs in with claims"
 [[ $(curl -sf -H "$H" "$URL/storage/assets/check/file.txt") == 'upgrade-check file' ]] || fail "stored file unreadable"
 check "stored file readable"
 
-for _ in $(seq 1 60); do
-  docker exec "$NAME" ls /data/files/.backups 2>/dev/null | grep -q -- '-upgrade-' && break
-  sleep 1
-done
-docker exec "$NAME" ls /data/files/.backups | grep -q -- '-upgrade-' || fail "no restore point written on upgrade"
-check "restore point written on first boot"
-
 boot "$NEW" "$NAME-restore" "$VOLUME-restore" $((PORT + 1))
 RESTORE=$(curl -s -X POST -H "$H" -H 'Content-Type: application/gzip' --data-binary @"$TMP/old-backup.tar.gz" \
   "http://127.0.0.1:$((PORT + 1))/api/restore?options=%7B%7D")

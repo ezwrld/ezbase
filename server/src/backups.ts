@@ -33,7 +33,7 @@ interface BackupManifest {
   createdAt: string
   type: BackupType
   scope: { database?: string; collection?: string }
-  includes: { documents: boolean; auth: boolean; storage: boolean; rules: boolean; fileContents?: boolean }
+  includes: { documents: boolean; auth: boolean; storage: boolean; rules: boolean }
   stats: {
     databases: Record<string, { collections: Record<string, { docCount: number; sizeBytes: number }> }>
     auth?: { userCount: number }
@@ -172,7 +172,7 @@ async function streamAuthTableJsonl(ws: fs.WriteStream, table: string) {
   }
 }
 
-export async function createBackup(opts: { type?: BackupType; database?: string; collection?: string; label?: string; fileContents?: boolean }) {
+export async function createBackup(opts: { type?: BackupType; database?: string; collection?: string }) {
   ensureDirs()
 
   const type: BackupType = opts.type || 'full'
@@ -197,7 +197,6 @@ export async function createBackup(opts: { type?: BackupType; database?: string;
     auth: type === 'auth' || (type === 'full' && !scoped),
     storage: type === 'storage' || (type === 'full' && !scoped),
     rules: type === 'full' && !scoped,
-    ...(opts.fileContents === false ? { fileContents: false } : {}),
   }
 
   // ── Gather stats + build manifest ───────────────────────────
@@ -250,7 +249,6 @@ export async function createBackup(opts: { type?: BackupType; database?: string;
     (database ? `-${database}` : '') +
     (collection ? `-${collection}` : '') +
     (type !== 'full' ? `-${type}` : '') +
-    (opts.label ? `-${opts.label}` : '') +
     '.tar.gz'
   const finalPath = path.join(BACKUP_PATH, name)
   const partialPath = path.join(TMP_PATH, name + '.partial')
@@ -310,14 +308,12 @@ export async function createBackup(opts: { type?: BackupType; database?: string;
         }
       })
 
-      if (includes.fileContents !== false) {
-        const cursor = sql`SELECT path FROM _ezbase_files`.cursor(500)
-        for await (const rows of cursor) {
-          for (const row of rows) {
-            const diskPath = path.join(STORAGE_PATH, row.path as string)
-            if (fs.existsSync(diskPath)) {
-              await addFileEntry(pack, `storage/${row.path}`, diskPath)
-            }
+      const cursor = sql`SELECT path FROM _ezbase_files`.cursor(500)
+      for await (const rows of cursor) {
+        for (const row of rows) {
+          const diskPath = path.join(STORAGE_PATH, row.path as string)
+          if (fs.existsSync(diskPath)) {
+            await addFileEntry(pack, `storage/${row.path}`, diskPath)
           }
         }
       }
@@ -808,35 +804,6 @@ backupRoutes.post('/backups', async (c) => {
     return c.json({ error: err.message }, 400)
   }
 })
-
-const VERSION_MARKER = `${BACKUP_PATH}/.version`
-const UPGRADE_BACKUPS_KEPT = 3
-
-/**
- * The first boot of a new release on existing data takes a backup, so every upgrade
- * leaves a restore point on the volume. An upgrade changes the database, never the
- * stored files, so it keeps file metadata and leaves the file bytes on disk. Runs in
- * the background; a failed attempt leaves the marker unchanged and retries next boot.
- */
-export async function backupOnUpgrade(version: string) {
-  if (version === 'dev') return
-  ensureDirs()
-  const previous = fs.existsSync(VERSION_MARKER) ? fs.readFileSync(VERSION_MARKER, 'utf-8').trim() : null
-  if (previous === version) return
-  const tables = await sql`
-    SELECT 1 FROM information_schema.tables
-    WHERE table_schema LIKE 'db\\_%' ESCAPE '\\' AND table_name LIKE 'col\\_%' ESCAPE '\\'
-    LIMIT 1
-  `
-  if (tables.length > 0) {
-    const t0 = Date.now()
-    const backup = await createBackup({ type: 'full', label: `upgrade-${version}`, fileContents: false })
-    console.log(`ezbase: ${previous ?? 'earlier release'} → ${version}; restore point ${backup.name} (${backup.size} bytes, ${Date.now() - t0}ms)`)
-    const upgrades = fs.readdirSync(BACKUP_PATH).filter((n) => BACKUP_NAME_RE.test(n) && n.includes('-upgrade-')).sort().reverse()
-    for (const old of upgrades.slice(UPGRADE_BACKUPS_KEPT)) fs.unlinkSync(path.join(BACKUP_PATH, old))
-  }
-  fs.writeFileSync(VERSION_MARKER, `${version}\n`)
-}
 
 // List backups
 backupRoutes.get('/backups', async (c) => {

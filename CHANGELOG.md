@@ -9,7 +9,24 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 - Compatibility or behavior changes are called out in that release's **Upgrade considerations** instead of being encoded in the version number.
 - Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
-Pin a release tag (`ghcr.io/ezwrld/ezbase:1.15`) to control when you take upgrades; `:latest` tracks the newest release.
+Pin a release tag (`ghcr.io/ezwrld/ezbase:1.16`) to control when you take upgrades; `:latest` tracks the newest release.
+
+---
+
+## v1.16 — 2026-10-26
+
+No automatic backup on upgrade.
+
+### Removed
+- The restore point written on a release's first boot (added in 1.13). Upgrades are protected by the release gate instead: every image must boot the previous release's data — a capitalized collection, 12,500 rows, a 2.2 MB document, a user with claims, a stored file, and an old backup — with every count, read, sign-in, file, and restore intact before it ships. Writing a database-sized archive on boot cost disk on hosts with multi-GB collections for no added protection. Existing `backup-…-upgrade-….tar.gz` files and `.backups/.version` are left in place and can be deleted.
+
+### Upgrade considerations
+- None.
+
+### Agent prompt
+```
+Update this project to ezbase 1.16 (image ghcr.io/ezwrld/ezbase:1.16). GET {ezbase}/api/health must report "1.16". No code or settings changes.
+```
 
 ---
 
