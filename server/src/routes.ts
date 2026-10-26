@@ -117,6 +117,41 @@ async function runReported(c: Context, query: string, params: unknown[], index: 
   return rows
 }
 
+/**
+ * An uncapped admin read as a JSON array, pulled from a Postgres cursor 1000 rows at a
+ * time, so the server holds one batch however many documents match.
+ */
+function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const batches = (sql.unsafe(query, params as any[]) as any).cursor(1000)[Symbol.asyncIterator]() as AsyncIterator<Record<string, unknown>[]>
+  let started = false
+  let first = true
+  return new ReadableStream({
+    async pull(controller) {
+      if (!started) {
+        started = true
+        controller.enqueue(encoder.encode('['))
+        return
+      }
+      const { value, done } = await batches.next()
+      if (done) {
+        controller.enqueue(encoder.encode(']'))
+        controller.close()
+        return
+      }
+      let chunk = ''
+      for (const row of value) {
+        chunk += (first ? '' : ',') + JSON.stringify(formatDoc(row))
+        first = false
+      }
+      controller.enqueue(encoder.encode(chunk))
+    },
+    async cancel() {
+      await batches.return?.()
+    },
+  })
+}
+
 // Aggregates scan every matching row; cap them so one cannot monopolize the database.
 const AGGREGATE_TIMEOUT_MS = 15000
 
@@ -135,7 +170,8 @@ async function resolveSubqueries(
   return { ok: true, subqueries }
 }
 
-const MAX_JSON_BYTES = parseInt(process.env.EZBASE_MAX_JSON_BYTES || String(1024 * 1024), 10)
+// Matches the 16 MB request body limit in the image's nginx.
+const MAX_JSON_BYTES = parseInt(process.env.EZBASE_MAX_JSON_BYTES || String(16 * 1024 * 1024), 10)
 
 async function readJsonBody(c: Context): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
   const declared = parseInt(c.req.header('content-length') || '0', 10)
@@ -366,14 +402,16 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     if (!(await collectionExists(database, collection))) return c.json([])
 
     const docFilters = c.get('docFilters') as AppliedFilter[] | undefined
+    const isAdmin = (c.get('role') || 'anonymous') === 'admin'
     let query: string
     let params: unknown[]
     let index: string
     let cap: number | null
+    let stream: boolean
     try {
       const resolved = await resolveSubqueries(c, database, parseWhere(c.req.query('where')))
       if (!resolved.ok) return resolved.response
-      ;({ query, params, index, cap } = await prepareQuery(
+      ;({ query, params, index, cap, stream } = await prepareQuery(
         database,
         collection,
         c.req.query('where'),
@@ -383,11 +421,17 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         docFilters,
         c.req.query('offset'),
         parseFields(c.req.query('fields')),
-        (c.get('role') || 'anonymous') === 'admin',
-        resolved.subqueries
+        isAdmin,
+        resolved.subqueries,
+        isAdmin
       ))
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid query' }, 400)
+    }
+    if (stream) {
+      c.header('X-Ezbase-Index', index)
+      c.header('Content-Type', 'application/json; charset=utf-8')
+      return c.body(streamJsonArray(query, params))
     }
     const rows = await runReported(c, query, params, index, () => sql.unsafe(query, params as any[]))
     const truncated = truncationError(rows.length, cap)

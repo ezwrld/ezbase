@@ -318,7 +318,7 @@ const leaders = await ez.collection('player_game_stats')
 
 - `groupBy`: up to 8 fields (dotted paths allowed); each appears in the row under its own name. Omit it for one row of totals.
 - `having` compares a `select` output to a number. `orderBy` takes a `select` output or a `groupBy` field; nulls sort last.
-- `limit` and `offset` work like lists: without a `limit`, more than 100 groups is a 400 instead of a partial result.
+- `limit` and `offset` work like lists: the admin key gets every group; other callers get up to 10000 and a 400 beyond that.
 - Compute rates from totals (`yards / carries`), never by averaging per-document rates.
 - `countDistinct` sorts every matching row; prefer `['count']` when each document is already one entity per group.
 - An aggregate is a read: the same rules and filters apply as `.get()`. Each one is limited to 15 seconds; narrow the `where` if it runs out.
@@ -338,7 +338,7 @@ Raw REST reads use plain comma-separated field names. The document envelope
 GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
 ```
 
-Results are never silently cut. A list, `onSnapshot`, or aggregate without a `limit` returns every match when there are at most 100 (`EZBASE_DEFAULT_LIMIT`) and a 400 (`More than 100 documents match. Pass limit …`) when there are more; a `limit` above 10000 (`EZBASE_MAX_LIMIT`) is a 400 when more than 10000 match. An explicit `limit` up to 10000 returns at most that many, as asked — page with `offset`. Same for the admin key. `limit=0` is an error.
+You get what you ask for, never a silently cut result. **Admin key:** no `limit` returns every match (streamed from a database cursor, so size is not a server problem); a `limit` returns at most that many, with no cap. **Users and anonymous clients:** at most 10000 (`EZBASE_MAX_LIMIT`) — no `limit` returns every match up to that and a 400 (`More than 10000 documents match. Pass limit …`) beyond it; a `limit` above 10000 is a 400. **`onSnapshot`/SSE** re-sends its whole result on every change, so it is capped at 10000 for everyone, the same way. Page with `offset`. `limit=0` is an error. Documents may be up to 16 MB (`EZBASE_MAX_JSON_BYTES`).
 
 **Sortable/filterable fields:** Any field in your data (dotted paths included), plus `created` and `updated` (document timestamps). Admin queries and aggregates create btree indexes automatically for their JSON filter/sort shapes — one per shape: a composite of up to three equality fields plus the sort (or of the equality fields alone for aggregates and subqueries), and single-field indexes for the range/`in` fields the composite does not cover. Indexes build in the background with `CREATE INDEX CONCURRENTLY`, so they never block writes; the query that triggers one runs without waiting. Client queries never create persistent database objects. Warm production query shapes once with an admin client so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
 
@@ -996,7 +996,7 @@ Built-in request analytics — every API call is aggregated into per-minute buck
 | `where` | `[["status","==","active"]]` | JSON array of `[field, op, value]`. Ops: `== != < > <= >= in`. `in` takes an array or `{"collection","where"?,"field"?}` subquery. Fields may be dotted paths. |
 | `orderBy` | `created` | Field to sort by |
 | `order` | `desc` | `asc` or `desc` |
-| `limit` | `20` | Max docs, up to 10000 (`EZBASE_MAX_LIMIT`). Omitted: all matches if ≤ 100 (`EZBASE_DEFAULT_LIMIT`), otherwise 400 — never a partial result. Above the max: 400 if more than the max match. `0` / negative → 400. |
+| `limit` | `20` | Max docs. Omitted: every match (admin key, streamed) or up to 10000 then 400 (other callers, and all SSE). Above 10000: allowed for the admin key, 400 otherwise. `0` / negative → 400. |
 
 ## Upgrading ezbase
 
