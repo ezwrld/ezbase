@@ -54,3 +54,6 @@ jobs:
 
       - name: Build production image
         run: docker build --build-arg EZBASE_VERSION=ci --tag ezbase:ci .
+
+      - name: Upgrade from the latest release
+        run: .github/upgrade-check.sh ezbase:ci ghcr.io/ezwrld/ezbase:latest

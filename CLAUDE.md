@@ -202,6 +202,8 @@ Automatic on merge to master, using a simple two-part release sequence (`1.8` �
 - `sdk/**` changed → increments the middle component of npm's latest `@ezwrld/ezbase`, publishes it, tags `sdk-vX.Y.0` (npm requires three-part semver; patch stays 0). The bump is not committed back (master is protected), so `sdk/package.json` can trail npm.
 - `server/**`, `console/**`, `nginx/**`, `docker/**`, `Dockerfile` changed → increments the image tag's right-hand number, pushes to GHCR as `ghcr.io/ezwrld/ezbase`, tags `vX.Y`
 
+**Every PR runs `.github/upgrade-check.sh`** in the Release gate: it seeds the latest published image (capitalized collection, 12,500 rows, 2.2 MB document, a user with claims, a stored file, a backup), boots the PR's image on the same volume, and fails unless every count, read, sign-in, file, restore point, and old-backup restore survives. Run it locally with `docker build -t ezbase:ci . && .github/upgrade-check.sh`.
+
 **Every release PR must add a `CHANGELOG.md` entry** — `## vX.Y — date` matching the version the workflow will mint (increment the right-hand integer: `1.9` → `1.10`). Required sections: **Upgrade considerations** ("None." if none) and **Agent prompt** (copy-paste for consuming apps: pin the new image, health check, SDK pin, anything they must change). Compatibility changes are explained there; they do not change the two-part numbering scheme.
 
 The image workflow (`publish-image.yml`) increments the right-hand version number, pushes `ghcr.io/ezwrld/ezbase:X.Y`, tags `vX.Y`, and creates the GitHub Release from that CHANGELOG section. `/api/health` reports the version baked in at image build.
