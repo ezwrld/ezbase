@@ -9,7 +9,34 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 - Compatibility or behavior changes are called out in that release's **Upgrade considerations** instead of being encoded in the version number.
 - Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
-Pin a release tag (`ghcr.io/ezwrld/ezbase:1.13`) to control when you take upgrades; `:latest` tracks the newest release.
+Pin a release tag (`ghcr.io/ezwrld/ezbase:1.14`) to control when you take upgrades; `:latest` tracks the newest release.
+
+---
+
+## v1.14 — 2026-10-26
+
+The admin key reads everything it asks for; documents up to 16 MB.
+
+### Changed
+- **Admin reads are uncapped.** With the admin key, a list without `limit` returns every match and a `limit` returns exactly that many, at any size. Results larger than 10000 rows stream from a Postgres cursor 1000 rows at a time, so the server holds one batch: 716,622 documents (495 MB) streamed in 2.6 s with the container at 441 MB. Aggregates with the admin key return every group.
+- **Other callers get up to 10000 (`EZBASE_MAX_LIMIT`), never a cut result.** Without `limit`, every match up to 10000, then a 400 (`More than 10000 documents match. Pass limit …`). A `limit` above 10000 is a 400 (`limit must be at most 10000`).
+- **Realtime (`onSnapshot`/SSE)** re-sends its whole result on every change, so it stays capped at 10000 for everyone, with the same 400.
+- **Documents may be up to 16 MB** (was 1 MB), matching the image's nginx request limit. `EZBASE_MAX_JSON_BYTES` still overrides.
+- `EZBASE_DEFAULT_LIMIT` is removed; there is no separate default page size.
+
+### Upgrade considerations
+- From 1.13: an admin list without `limit` that used to 400 above 100 matches now returns everything. A browser/user list without `limit` returns up to 10000 instead of a 400 above 100.
+- Remove `EZBASE_DEFAULT_LIMIT` and any `EZBASE_MAX_LIMIT` / `EZBASE_MAX_JSON_BYTES` raised to work around the old caps; they are no longer needed.
+
+### Agent prompt
+```
+Update this project to ezbase 1.14 (image ghcr.io/ezwrld/ezbase:1.14). GET {ezbase}/api/health must report "1.14".
+
+1. Remove EZBASE_DEFAULT_LIMIT, and EZBASE_MAX_LIMIT / EZBASE_MAX_JSON_BYTES if they were raised to get around ezbase's caps.
+2. Server code using the admin key can drop paging loops and huge limits that only existed to read a whole result; a read without limit now returns every match.
+3. Browser/user reads and onSnapshot: if one can match more than 10000 documents, pass a limit and page with offset — it returns a 400 otherwise.
+4. Deploy. The first boot writes `restore point backup-…-upgrade-1.14.tar.gz` (server log); copy it off the host.
+```
 
 ---
 

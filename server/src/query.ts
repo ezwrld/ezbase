@@ -279,36 +279,38 @@ function selectClause(fields?: string[]): string {
   ), '{}'::jsonb) AS data, created_at, updated_at`
 }
 
-type RowCap = { rows: number; strict: boolean }
+const MAX_LIMIT = parseInt(process.env.EZBASE_MAX_LIMIT || '10000', 10)
 
 /**
- * The row cap for a request. `strict` means the caller asked for every match (no
- * limit, or more than EZBASE_MAX_LIMIT): the query fetches one extra row so a cut
- * can be refused instead of silently returning a partial result.
+ * How many rows a request may return. Admin reads (`uncapped`) get exactly what they
+ * ask for: no limit means every match, streamed. Everyone else gets at most
+ * EZBASE_MAX_LIMIT; without a limit the query fetches one extra row so a cut is
+ * refused instead of silently returning part of the result.
  */
-function resolveLimit(limit: string | number | undefined): RowCap {
-  const DEFAULT_LIMIT = parseInt(process.env.EZBASE_DEFAULT_LIMIT || '100', 10)
-  const MAX_LIMIT = parseInt(process.env.EZBASE_MAX_LIMIT || '10000', 10)
+type RowCap = { rows: number | null; strict: boolean }
+
+function resolveLimit(limit: string | number | undefined, uncapped: boolean): RowCap {
   if (limit !== undefined && limit !== '') {
     const n = typeof limit === 'number' ? limit : parseInt(limit, 10)
     if (!Number.isInteger(n) || n <= 0) {
       throw new Error('limit must be a positive integer')
     }
-    return n > MAX_LIMIT ? { rows: MAX_LIMIT, strict: true } : { rows: n, strict: false }
+    if (n > MAX_LIMIT && !uncapped) throw new Error(`limit must be at most ${MAX_LIMIT}`)
+    return { rows: n, strict: false }
   }
-  return { rows: DEFAULT_LIMIT, strict: true }
+  return uncapped ? { rows: null, strict: false } : { rows: MAX_LIMIT, strict: true }
 }
 
 function pushLimit(params: unknown[], cap: RowCap): string {
+  if (cap.rows === null) return ''
   params.push(cap.strict ? cap.rows + 1 : cap.rows)
   return ` LIMIT $${params.length}`
 }
 
-/** The 400 message when more rows match than a strict cap allows, or null when the result is complete. */
+/** The 400 message when more rows match than a client may read at once, or null when the result is complete. */
 export function truncationError(rowCount: number, cap: number | null): string | null {
   if (cap === null || rowCount <= cap) return null
-  const max = parseInt(process.env.EZBASE_MAX_LIMIT || '10000', 10)
-  return `More than ${cap} documents match. Pass limit (at most ${max}) and page with offset, or narrow the where clause.`
+  return `More than ${cap} documents match. Pass limit (at most ${MAX_LIMIT}) and page with offset, or narrow the where clause.`
 }
 
 function appendOffset(params: unknown[], offset: string | number | undefined): string {
@@ -330,8 +332,9 @@ export function buildQuerySql(
   fields?: string[],
   isAdmin = false,
   useJsonbPredicates = autoIndexEnabled(),
-  subqueries?: SubqueryAccess
-): { query: string; params: unknown[]; cap: number | null } {
+  subqueries?: SubqueryAccess,
+  uncapped = false
+): { query: string; params: unknown[]; cap: number | null; stream: boolean } {
   void isAdmin
   const params: unknown[] = []
   const predicates = wherePredicates(parseWhere(whereParam), docFilters, params, {
@@ -350,11 +353,11 @@ export function buildQuerySql(
     query += ' ORDER BY created_at DESC'
   }
 
-  const cap = resolveLimit(limitParam)
+  const cap = resolveLimit(limitParam, uncapped)
   query += pushLimit(params, cap)
   query += appendOffset(params, offsetParam)
 
-  return { query, params, cap: cap.strict ? cap.rows : null }
+  return { query, params, cap: cap.strict ? cap.rows : null, stream: cap.rows === null || cap.rows > MAX_LIMIT }
 }
 
 async function ensureWhereIndexes(
@@ -387,8 +390,9 @@ export async function prepareQuery(
   offsetParam?: string,
   fields?: string[],
   isAdmin = false,
-  subqueries?: SubqueryAccess
-): Promise<{ query: string; params: unknown[]; index: string; cap: number | null }> {
+  subqueries?: SubqueryAccess,
+  uncapped = false
+): Promise<{ query: string; params: unknown[]; index: string; cap: number | null; stream: boolean }> {
   const useJsonb = autoIndexEnabled()
   const index = describeIndexUse(collection, queryShape(parseWhere(whereParam), docFilters, orderBy, 'created'))
   if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
@@ -406,7 +410,8 @@ export async function prepareQuery(
     fields,
     isAdmin,
     useJsonb,
-    subqueries
+    subqueries,
+    uncapped
   ) }
 }
 
@@ -477,7 +482,8 @@ export function buildAggregateSql(
   req: AggregateRequest,
   docFilters?: AppliedFilter[],
   useJsonbPredicates = autoIndexEnabled(),
-  subqueries?: SubqueryAccess
+  subqueries?: SubqueryAccess,
+  uncapped = false
 ): { query: string; params: unknown[]; cap: number | null } {
   const params: unknown[] = []
   const groupBy = req.groupBy ?? []
@@ -515,7 +521,7 @@ export function buildAggregateSql(
     query += ` ORDER BY ${target} ${dir} NULLS LAST`
   }
 
-  const cap = resolveLimit(req.limit)
+  const cap = resolveLimit(req.limit, uncapped)
   query += pushLimit(params, cap)
   query += appendOffset(params, req.offset)
 
@@ -534,7 +540,7 @@ export async function prepareAggregate(
   if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
     await ensureWhereIndexes(database, req.where ?? [], collection, undefined, docFilters, subqueries, false)
   }
-  return { index, ...buildAggregateSql(database, collection, req, docFilters, autoIndexEnabled(), subqueries) }
+  return { index, ...buildAggregateSql(database, collection, req, docFilters, autoIndexEnabled(), subqueries, isAdmin) }
 }
 
 type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] }

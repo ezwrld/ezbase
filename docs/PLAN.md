@@ -9,12 +9,13 @@ A backend for web and mobile apps in one Docker image: realtime document databas
 | # | Work | State |
 |---|------|-------|
 | 1 | **Fleet** (`fleet/`): one local page for every instance — health, version drift, traffic, errors, size, backups, one-click console | done |
-| 2 | **Webhooks**: `webhooks.json` → signed POSTs on document create/update/delete, driven by the existing LISTEN/NOTIFY feed, with retries and a delivery log in the console | next |
-| 3 | **Landing page** + domain: value prop, quick start, "self-host free" now; "hosted" waitlist once a domain exists | needs a domain |
-| 4 | **Split compute from data** (stage 2 below) | when an instance outgrows one box |
-| 5 | **ezbase Cloud** starter tier | when someone asks to pay for hosting |
+| 2 | **Data shapes in the console**: per collection, every distinct shape the live documents take (field → types seen, how many documents each), the TypeScript interface derived from it, the documents that don't fit the dominant shape, and a suggested cleanup script for them — so the real data is visible and drift that would produce bad output in the product is caught | next |
+| 3 | **Webhooks**: `webhooks.json` → signed POSTs on document create/update/delete, driven by the existing LISTEN/NOTIFY feed, with retries and a delivery log in the console | next |
+| 4 | **Landing page** + domain: value prop, quick start, "self-host free" now; "hosted" waitlist once a domain exists | needs a domain |
+| 5 | **Split compute from data** (stage 2 below) | when an instance outgrows one box |
+| 6 | **ezbase Cloud** starter tier | when someone asks to pay for hosting |
 
-Fleet data decides 4 and 5: an instance whose data size, request rate, or average latency keeps climbing on one box is the trigger, not a calendar.
+Fleet data decides 5 and 6: an instance whose data size, request rate, or average latency keeps climbing on one box is the trigger, not a calendar.
 
 ## Scaling: where one box breaks first
 
