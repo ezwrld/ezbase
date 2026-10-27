@@ -20,6 +20,7 @@ import {
 import { publishChange, subscribe } from './pubsub.js'
 import { canReadCollection, checkCollectionAccess, requirePermission } from './middleware.js'
 import { declaredIndexStatus } from './indexes.js'
+import { analyzeShapes } from './shapes.js'
 import { hasExplicitCollectionRule } from './rules.js'
 import type { AppliedFilter } from './rules.js'
 
@@ -327,6 +328,23 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
   })
 
   // ── Stats (admin-only, used by console dashboard) ─────────
+  // ── Shapes (admin): fields, types, values, issues, derived TypeScript ──
+  app.get('/collections/:collection/shapes', async (c) => {
+    if ((c.get('role') || 'anonymous') !== 'admin') {
+      return c.json({ error: 'Forbidden' }, c.get('role') ? 403 : 401)
+    }
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    if (!(await collectionExists(database, collection))) return c.json({ error: 'Collection not found' }, 404)
+    try {
+      return c.json(await analyzeShapes(database, collection, c.req.query('by') || undefined))
+    } catch (error) {
+      if ((error as { code?: string }).code === '57014') return c.json({ error: 'Shape analysis exceeded 20s' }, 400)
+      if (error instanceof Error && /field/i.test(error.message)) return c.json({ error: error.message }, 400)
+      throw error
+    }
+  })
+
   app.get('/collections/:collection/stats', async (c) => {
     const role = c.get('role') || 'anonymous'
     if (role !== 'admin') {
