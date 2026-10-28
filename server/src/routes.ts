@@ -19,7 +19,8 @@ import {
 } from './query.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { canReadCollection, checkCollectionAccess, requirePermission } from './middleware.js'
-import { declaredIndexStatus } from './indexes.js'
+import { collectionIndexes, declaredIndexStatus, dropLegacyIndex, writeCollectionIndexes } from './indexes.js'
+import { analyzeShapes } from './shapes.js'
 import { hasExplicitCollectionRule } from './rules.js'
 import type { AppliedFilter } from './rules.js'
 
@@ -327,6 +328,45 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
   })
 
   // ── Stats (admin-only, used by console dashboard) ─────────
+  // ── Indexes on one collection (admin) ──
+  app.get('/collections/:collection/indexes', async (c) => {
+    if ((c.get('role') || 'anonymous') !== 'admin') return c.json({ error: 'Forbidden' }, c.get('role') ? 403 : 401)
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    if (!(await collectionExists(database, collection))) return c.json({ error: 'Collection not found' }, 404)
+    return c.json(await collectionIndexes(database, collection))
+  })
+
+  app.delete('/collections/:collection/indexes/:name', async (c) => {
+    if ((c.get('role') || 'anonymous') !== 'admin') return c.json({ error: 'Forbidden' }, c.get('role') ? 403 : 401)
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    if (!(await collectionExists(database, collection))) return c.json({ error: 'Collection not found' }, 404)
+    try {
+      await dropLegacyIndex(database, collection, c.req.param('name'))
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Drop failed' }, 400)
+    }
+    return c.json(await collectionIndexes(database, collection))
+  })
+
+  // ── Shapes (admin): fields, types, values, issues, derived TypeScript ──
+  app.get('/collections/:collection/shapes', async (c) => {
+    if ((c.get('role') || 'anonymous') !== 'admin') {
+      return c.json({ error: 'Forbidden' }, c.get('role') ? 403 : 401)
+    }
+    const collection = c.req.param('collection')
+    const database = getDatabase(c)
+    if (!(await collectionExists(database, collection))) return c.json({ error: 'Collection not found' }, 404)
+    try {
+      return c.json(await analyzeShapes(database, collection, c.req.query('by') || undefined))
+    } catch (error) {
+      if ((error as { code?: string }).code === '57014') return c.json({ error: 'Shape analysis exceeded 20s' }, 400)
+      if (error instanceof Error && /field/i.test(error.message)) return c.json({ error: error.message }, 400)
+      throw error
+    }
+  })
+
   app.get('/collections/:collection/stats', async (c) => {
     const role = c.get('role') || 'anonymous'
     if (role !== 'admin') {
@@ -679,6 +719,20 @@ adminRoutes.get('/indexes', async (c) => {
 })
 
 // List databases
+// Replace one collection's declared indexes in indexes.json (409 when the file is mounted read-only)
+adminRoutes.put('/indexes/collections/:collection', async (c) => {
+  const role = c.get('role') || 'anonymous'
+  if (role !== 'admin') return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
+  const body = await c.req.json().catch(() => null) as { indexes?: unknown } | null
+  if (!body || !Array.isArray(body.indexes)) return c.json({ error: 'Body must be { "indexes": [...] }' }, 400)
+  try {
+    return c.json(writeCollectionIndexes(c.req.param('collection'), body.indexes as any))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Write failed'
+    return c.json({ error: message }, /read-only/.test(message) ? 409 : 400)
+  }
+})
+
 adminRoutes.get('/databases', async (c) => {
   const role = c.get('role') || 'anonymous'
   if (role !== 'admin') {

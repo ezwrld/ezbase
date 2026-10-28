@@ -1,51 +1,61 @@
-import { useState } from 'react'
-import { Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { Loader2, AlertCircle, Radio, Database, ChevronDown, FileJson, HardDrive, Activity as ActivityIcon, KeyRound } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Navigate, NavLink, Route, Routes, useMatch, useNavigate, useParams } from 'react-router-dom'
+import { Loader2, AlertCircle, ChevronDown, FileJson, HardDrive, Activity as ActivityIcon, KeyRound, LogOut } from 'lucide-react'
 import { useDatabases } from '@/hooks/useDatabases'
 import { useCollections } from '@/hooks/useCollections'
-import { useDocuments } from '@/hooks/useDocuments'
 import { useCollectionStats } from '@/hooks/useCollectionStats'
-import { DocumentTable } from '@/components/DocumentTable'
 import { Dashboard } from '@/components/Dashboard'
 import { RulesEditor } from '@/components/RulesEditor'
 import { StorageBrowser } from '@/components/StorageBrowser'
 import { Activity } from '@/components/Activity'
 import { AuthSettings } from '@/components/AuthSettings'
+import { DocumentsTab } from '@/components/collection/DocumentsTab'
+import { QueryTab } from '@/components/collection/QueryTab'
+import { IndexesTab } from '@/components/collection/IndexesTab'
+import { ShapesTab } from '@/components/collection/ShapesTab'
+import { ADMIN_KEY_STORAGE, num } from '@/lib/api'
 
-function collectionFromPath(pathname: string): string | null {
-  const m = pathname.match(/^\/collections\/([^/]+)$/)
-  const encodedName = m?.[1]
-  return encodedName ? decodeURIComponent(encodedName) : null
-}
+const TABS = [
+  { id: 'documents', label: 'Documents' },
+  { id: 'query', label: 'Query' },
+  { id: 'indexes', label: 'Indexes' },
+  { id: 'shapes', label: 'Shapes' },
+] as const
+type TabId = (typeof TABS)[number]['id']
 
-function sidebarNavClass({ isActive }: { isActive: boolean }) {
-  return `flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
-    isActive
-      ? 'bg-sky-400/10 text-sky-400'
-      : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-  }`
-}
+const PAGES: Record<string, string> = { auth: 'Auth', storage: 'Storage', rules: 'Rules', activity: 'Activity' }
+
+/** Behind `ez fleet` each instance is `<name>.ezbase.localhost`; elsewhere the host names it. */
+const INSTANCE = location.hostname.match(/^([^.]+)\.ezbase\.localhost$/)?.[1] ?? location.host
+
+const dataPath = (db: string, collection: string, tab: TabId = 'documents', doc?: string) =>
+  `/data/${encodeURIComponent(db)}/${encodeURIComponent(collection)}/${tab}${doc ? `/${encodeURIComponent(doc)}` : ''}`
 
 export default function App() {
-  const location = useLocation()
   const navigate = useNavigate()
-  const selected = collectionFromPath(location.pathname)
+  const dataMatch = useMatch('/data/:db/:collection/:tab/*')
+  const pageMatch = useMatch('/:page')
 
-  const [adminKey, setAdminKey] = useState<string | null>(() => localStorage.getItem('ezbase_admin_key'))
+  const [adminKey, setAdminKey] = useState<string | null>(() => localStorage.getItem(ADMIN_KEY_STORAGE))
   const [keyInput, setKeyInput] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
+  const [chosenDb, setChosenDb] = useState('default')
+  const [dbOpen, setDbOpen] = useState(false)
+  const [version, setVersion] = useState('')
 
-  const [selectedDb, setSelectedDb] = useState('default')
-  const [dbDropdownOpen, setDbDropdownOpen] = useState(false)
+  const db = dataMatch?.params.db ?? chosenDb
+  const collection = dataMatch?.params.collection ?? null
+  const tab = (dataMatch?.params.tab as TabId | undefined) ?? 'documents'
 
-  // Hooks are called unconditionally (rules of hooks), but only used when authenticated
   const { databases, loading: dbLoading } = useDatabases(adminKey || '')
-  const { collections, loading: colLoading, error: colError, refresh } = useCollections(selectedDb, adminKey || '')
-  const { documents, loading: docLoading, error: docError } = useDocuments(selectedDb, selected, adminKey || '')
-  const stats = useCollectionStats(selectedDb, collections, adminKey || '')
+  const { collections, loading: colLoading, error: colError } = useCollections(db, adminKey || '')
+  const stats = useCollectionStats(db, collections, adminKey || '')
   const statsMap = new Map(stats.map((s) => [s.name, s]))
-  const totalCount = selected ? statsMap.get(selected)?.count ?? documents.length : 0
+
+  useEffect(() => {
+    fetch('/api/health').then((r) => r.json()).then((h) => setVersion(h.version ?? '')).catch(() => {})
+  }, [])
 
   async function handleKeySubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -54,11 +64,9 @@ export default function App() {
     setConnecting(true)
     setConnectError(null)
     try {
-      const res = await fetch('/api/rules', {
-        headers: { Authorization: `Bearer ${key}` },
-      })
+      const res = await fetch('/api/rules', { headers: { Authorization: `Bearer ${key}` } })
       if (!res.ok) throw new Error('Invalid admin key')
-      localStorage.setItem('ezbase_admin_key', key)
+      localStorage.setItem(ADMIN_KEY_STORAGE, key)
       setAdminKey(key)
     } catch {
       setConnectError('Invalid admin key')
@@ -68,251 +76,267 @@ export default function App() {
   }
 
   function handleLogout() {
-    localStorage.removeItem('ezbase_admin_key')
+    localStorage.removeItem(ADMIN_KEY_STORAGE)
     setAdminKey(null)
     setKeyInput('')
   }
 
-  function selectCollection(name: string) {
-    navigate(`/collections/${encodeURIComponent(name)}`)
-    refresh()
-  }
-
   function selectDatabase(name: string) {
-    setSelectedDb(name)
-    setDbDropdownOpen(false)
-    if (collectionFromPath(location.pathname)) navigate('/')
+    setChosenDb(name)
+    setDbOpen(false)
+    navigate('/')
   }
 
-  // Login screen
   if (!adminKey) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-4">
-        <div className="w-full max-w-sm space-y-8">
-          <div className="text-center font-mono text-2xl font-medium tracking-tight">
-            <span className="text-sky-400">ez</span>
-            <span className="text-zinc-50">base</span>
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[#0b0b0c] px-4">
+        <form onSubmit={handleKeySubmit} className="w-full max-w-sm space-y-6">
+          <div className="text-center text-2xl font-semibold tracking-tight">
+            <span className="text-sky-500">ez</span>
+            <span className="text-white">base</span>
           </div>
-
-          <form onSubmit={handleKeySubmit} className="space-y-4">
-            <div>
-              <label htmlFor="admin-key" className="block text-xs font-medium text-zinc-400 mb-1.5">
-                Admin Key
-              </label>
-              <input
-                id="admin-key"
-                type="password"
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                placeholder="Enter admin key"
-                autoFocus
-                className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
-              />
-              {connectError && (
-                <p className="mt-2 text-xs text-red-400">{connectError}</p>
-              )}
-            </div>
-            <button
-              type="submit"
-              disabled={connecting}
-              className="flex w-full items-center justify-center gap-2 rounded bg-sky-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-600 disabled:opacity-50"
-            >
-              {connecting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              Connect
-            </button>
-          </form>
-        </div>
+          <div>
+            <label htmlFor="admin-key" className="mb-1.5 block text-xs font-medium text-zinc-400">Admin key</label>
+            <input
+              id="admin-key"
+              type="password"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              autoFocus
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 outline-none focus:border-sky-500"
+            />
+            {connectError && <p className="mt-2 text-xs text-red-400">{connectError}</p>}
+          </div>
+          <button type="submit" disabled={connecting} className="flex w-full items-center justify-center gap-2 rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:opacity-50">
+            {connecting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            Connect
+          </button>
+        </form>
       </div>
     )
   }
 
+  const page = pageMatch ? PAGES[pageMatch.params.page ?? ''] : undefined
+  const segments: { label: string; to?: string }[] = [{ label: INSTANCE, to: '/' }]
+  if (collection) {
+    segments.push({ label: db, to: '/' }, { label: collection, to: dataPath(db, collection, tab) })
+    const docId = dataMatch?.params['*']
+    if (tab === 'documents' && docId) segments.push({ label: decodeURIComponent(docId) })
+  } else if (page) {
+    segments.push({ label: page })
+  } else {
+    segments.push({ label: db })
+  }
+
   return (
-    <div className="flex h-screen flex-col">
-      {/* Header */}
-      <header className="flex h-12 shrink-0 items-center justify-between border-b-2 border-primary bg-zinc-950 px-5">
-        <Link to="/" className="font-mono text-sm font-medium tracking-tight">
-          <span className="text-sky-400">ez</span>
-          <span className="text-zinc-50">base</span>
-          <span className="mx-0.5 font-normal text-zinc-600">/</span>
-          <span className="font-normal text-zinc-600">console</span>
-        </Link>
-        <div className="flex items-center gap-2">
+    <div className="flex h-screen">
+      <nav className="flex w-[232px] shrink-0 flex-col bg-[#0b0b0c] text-zinc-300">
+        <NavLink to="/" className="px-5 pb-5 pt-5 text-[22px] font-bold tracking-tight">
+          <span className="text-sky-500">ez</span>
+          <span className="text-white">base</span>
+        </NavLink>
+
+        <div className="relative px-4">
           <button
             type="button"
-            onClick={handleLogout}
-            className="rounded px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-300"
-            title="Log out"
+            onClick={() => setDbOpen(!dbOpen)}
+            className="flex w-full items-center justify-between rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-100 hover:border-zinc-500"
           >
-            Logout
+            <span className="truncate">{db}</span>
+            <ChevronDown className={`h-4 w-4 text-zinc-400 transition-transform ${dbOpen ? 'rotate-180' : ''}`} />
           </button>
-        </div>
-      </header>
-
-      {/* Body */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <nav className="flex w-52 shrink-0 flex-col overflow-y-auto bg-zinc-900">
-          {/* Database selector */}
-          <div className="relative border-b border-zinc-800 px-3 py-3">
-            <button
-              type="button"
-              onClick={() => setDbDropdownOpen(!dbDropdownOpen)}
-              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800"
-            >
-              <Database className="h-3.5 w-3.5 text-zinc-500" />
-              <span className="flex-1 truncate text-left font-mono">{selectedDb}</span>
-              <ChevronDown className={`h-3 w-3 text-zinc-500 transition-transform ${dbDropdownOpen ? 'rotate-180' : ''}`} />
-            </button>
-
-            {dbDropdownOpen && (
-              <div className="absolute left-3 right-3 top-full z-10 mt-1 rounded border border-zinc-700 bg-zinc-800 py-1 shadow-lg">
-                {dbLoading && (
-                  <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500">
-                    <Loader2 className="h-3 w-3 animate-spin" /> Loading...
-                  </div>
-                )}
-                {databases.map((db) => (
-                  <button
-                    type="button"
-                    key={db}
-                    onClick={() => selectDatabase(db)}
-                    className={`flex w-full items-center px-3 py-1.5 text-left font-mono text-xs transition-colors ${
-                      selectedDb === db
-                        ? 'bg-sky-400/10 text-sky-400'
-                        : 'text-zinc-300 hover:bg-zinc-700'
-                    }`}
-                  >
-                    {db}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-1 flex-col">
-            <div className="px-4 pb-2.5 pt-4 text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
-              Collections
+          {dbOpen && (
+            <div className="absolute left-4 right-4 top-full z-20 mt-1 rounded-md border border-zinc-700 bg-zinc-900 py-1">
+              {dbLoading && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500"><Loader2 className="h-3 w-3 animate-spin" /> Loading</div>}
+              {databases.map((name) => (
+                <button
+                  type="button"
+                  key={name}
+                  onClick={() => selectDatabase(name)}
+                  className={`block w-full px-3 py-1.5 text-left text-sm ${name === db ? 'text-sky-400' : 'text-zinc-300 hover:bg-zinc-800'}`}
+                >
+                  {name}
+                </button>
+              ))}
             </div>
+          )}
+        </div>
 
-            {colLoading && (
-              <div className="flex items-center gap-2 px-4 py-2 text-xs text-zinc-500">
-                <Loader2 className="h-3 w-3 animate-spin" /> Loading...
-              </div>
-            )}
-
-            {colError && (
-              <div className="flex items-center gap-2 px-4 py-2 text-xs text-red-400">
-                <AlertCircle className="h-3 w-3" /> {colError}
-              </div>
-            )}
-
-            {!colLoading && !colError && collections.length === 0 && (
-              <div className="px-4 py-2 text-xs text-zinc-500">
-                No collections yet
-              </div>
-            )}
-
-            {collections.map((name) => (
+        <div className="mt-5 px-5 pb-2 text-xs font-medium text-zinc-500">Collections</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+          {colLoading && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500"><Loader2 className="h-3 w-3 animate-spin" /> Loading</div>}
+          {colError && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-red-400"><AlertCircle className="h-3 w-3" /> {colError}</div>}
+          {!colLoading && !colError && collections.length === 0 && <div className="px-3 py-1.5 text-xs text-zinc-500">No collections</div>}
+          {collections.map((name) => {
+            const count = statsMap.get(name)?.count
+            return (
               <button
                 type="button"
                 key={name}
-                onClick={() => selectCollection(name)}
-                className={`flex items-center justify-between px-4 py-1.5 text-left font-mono text-xs transition-colors ${
-                  selected === name
-                    ? 'border-l-2 border-sky-400 bg-sky-400/10 text-zinc-100'
-                    : 'border-l-2 border-transparent text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
+                onClick={() => navigate(dataPath(db, name, tab))}
+                className={`flex w-full items-center justify-between gap-2 rounded-md px-3 py-1.5 text-left font-mono text-[13px] ${
+                  name === collection ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100'
                 }`}
               >
-                <span className="truncate">{name}</span>
-                {statsMap.has(name) && (
-                  <span className="ml-2 shrink-0 rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300">
-                    {statsMap.get(name)!.count}
-                  </span>
-                )}
+                <span className="truncate" title={name}>{name}</span>
+                {count !== undefined && <span className="shrink-0 tabular-nums text-zinc-500">{num(count)}</span>}
               </button>
-            ))}
-          </div>
+            )
+          })}
+        </div>
 
-          <div className="border-t border-zinc-800 px-3 py-3 space-y-1">
-            <NavLink to="/auth" className={sidebarNavClass}>
-              <KeyRound className="h-3.5 w-3.5" />
-              <span>Auth</span>
-            </NavLink>
-            <NavLink to="/activity" className={sidebarNavClass}>
-              <ActivityIcon className="h-3.5 w-3.5" />
-              <span>Activity</span>
-            </NavLink>
-            <NavLink to="/rules" className={sidebarNavClass}>
-              <FileJson className="h-3.5 w-3.5" />
-              <span>Rules</span>
-            </NavLink>
-            <NavLink to="/storage" className={sidebarNavClass}>
-              <HardDrive className="h-3.5 w-3.5" />
-              <span>Storage</span>
-            </NavLink>
-          </div>
-        </nav>
-
-        {/* Main content */}
-        <main className="flex flex-1 flex-col overflow-hidden bg-zinc-50">
-          <Routes>
-            <Route path="/" element={<Dashboard stats={stats} onSelectCollection={selectCollection} />} />
-            <Route path="/auth" element={<AuthSettings adminKey={adminKey} />} />
-            <Route path="/activity" element={<Activity adminKey={adminKey} />} />
-            <Route path="/rules" element={<RulesEditor adminKey={adminKey} />} />
-            <Route path="/storage" element={<StorageBrowser adminKey={adminKey} />} />
-            <Route
-              path="/collections/:name"
-              element={
-                selected ? (
-                  <>
-                    <div className="flex items-center justify-between border-b border-zinc-200 bg-white px-5 py-3">
-                      <div className="flex items-center gap-3">
-                        <h2 className="font-mono text-base font-semibold text-zinc-900">{selected}</h2>
-                        {!docLoading && (
-                          <span className="text-xs text-zinc-500">
-                            {totalCount.toLocaleString()} document{totalCount !== 1 ? 's' : ''}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5 text-xs text-emerald-600">
-                          <Radio className="h-3 w-3" />
-                          Live
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex-1 overflow-hidden">
-                      {docLoading && (
-                        <div className="flex items-center justify-center py-20">
-                          <Loader2 className="h-5 w-5 animate-spin text-zinc-400" />
-                        </div>
-                      )}
-
-                      {docError && (
-                        <div className="flex items-center justify-center gap-2 py-20 text-sm text-red-500">
-                          <AlertCircle className="h-4 w-4" /> {docError}
-                        </div>
-                      )}
-
-                      {!docLoading && !docError && documents.length === 0 && (
-                        <div className="flex items-center justify-center py-20 text-sm text-zinc-400">
-                          Collection is empty
-                        </div>
-                      )}
-
-                      {!docLoading && !docError && documents.length > 0 && (
-                        <DocumentTable documents={documents} />
-                      )}
-                    </div>
-                  </>
-                ) : null
+        <div className="border-t border-zinc-800 px-2 py-3">
+          {[
+            { to: '/auth', label: 'Auth', icon: KeyRound },
+            { to: '/storage', label: 'Storage', icon: HardDrive },
+            { to: '/rules', label: 'Rules', icon: FileJson },
+            { to: '/activity', label: 'Activity', icon: ActivityIcon },
+          ].map(({ to, label, icon: Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) =>
+                `flex items-center gap-2.5 rounded-md px-3 py-1.5 text-sm ${isActive ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100'}`
               }
-            />
-          </Routes>
-        </main>
-      </div>
+            >
+              <Icon className="h-4 w-4" /> {label}
+            </NavLink>
+          ))}
+          <button type="button" onClick={handleLogout} className="flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-sm text-zinc-500 hover:bg-zinc-900 hover:text-zinc-200">
+            <LogOut className="h-4 w-4" /> Log out
+          </button>
+        </div>
+      </nav>
+
+      <main className="flex min-w-0 flex-1 flex-col bg-zinc-50">
+        <div className="shrink-0 bg-white px-6 pt-4">
+          <PathBar
+            segments={segments}
+            version={version}
+            onGo={(path) => {
+              const parts = path.split('/').map((p) => p.trim()).filter(Boolean)
+              const target = parts.length > 1 && databases.includes(parts[0] ?? '') ? parts.shift()! : db
+              const [name, ...rest] = parts
+              navigate(name ? dataPath(target, name, 'documents', rest.join('/') || undefined) : '/')
+            }}
+            current={collection ? [db, collection, tab === 'documents' ? dataMatch?.params['*'] && decodeURIComponent(dataMatch.params['*']) : ''].filter(Boolean).join('/') : ''}
+          />
+          {collection && (
+            <div className="mt-3 flex gap-1 border-b border-zinc-200">
+              {TABS.map((t) => (
+                <NavLink
+                  key={t.id}
+                  to={dataPath(db, collection, t.id)}
+                  className={`-mb-px border-b-2 px-3 pb-2.5 pt-1 text-sm ${
+                    t.id === tab ? 'border-sky-500 font-medium text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-800'
+                  }`}
+                >
+                  {t.label}
+                </NavLink>
+              ))}
+            </div>
+          )}
+          {!collection && <div className="mt-3 border-b border-zinc-200" />}
+        </div>
+
+        <Routes>
+          <Route path="/" element={<Dashboard stats={stats} onSelectCollection={(name) => navigate(dataPath(db, name))} />} />
+          <Route path="/auth" element={<AuthSettings adminKey={adminKey} />} />
+          <Route path="/activity" element={<Activity adminKey={adminKey} />} />
+          <Route path="/rules" element={<RulesEditor adminKey={adminKey} />} />
+          <Route path="/storage" element={<StorageBrowser adminKey={adminKey} />} />
+          <Route path="/collections/:name" element={<LegacyCollection />} />
+          <Route path="/data/:db/:collection" element={<CollectionRedirect />} />
+          <Route
+            path="/data/:db/:collection/:tab/*"
+            element={<CollectionView total={collection ? statsMap.get(collection)?.count ?? null : null} />}
+          />
+        </Routes>
+      </main>
+    </div>
+  )
+}
+
+function CollectionView({ total }: { total: number | null }) {
+  const { db, collection, tab, '*': doc } = useParams()
+  if (!db || !collection) return null
+  if (tab === 'query') return <QueryTab database={db} collection={collection} />
+  if (tab === 'indexes') return <IndexesTab database={db} collection={collection} />
+  if (tab === 'shapes') return <ShapesTab database={db} collection={collection} />
+  return <DocumentsTab database={db} collection={collection} docId={doc ? decodeURIComponent(doc) : null} total={total} />
+}
+
+function CollectionRedirect() {
+  const { db, collection } = useParams()
+  return <Navigate to={dataPath(db!, collection!)} replace />
+}
+
+function LegacyCollection() {
+  const { name } = useParams()
+  return <Navigate to={dataPath('default', name!)} replace />
+}
+
+/** Firebase-style path: clickable segments; click the bar to type `collection/doc` or `database/collection/doc`. */
+function PathBar({ segments, version, current, onGo }: { segments: { label: string; to?: string }[]; version: string; current: string; onGo: (path: string) => void }) {
+  const navigate = useNavigate()
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editing) input.current?.select()
+  }, [editing])
+
+  return (
+    <div
+      className="flex h-11 items-center rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm"
+      onClick={() => {
+        if (!editing) {
+          setText(current)
+          setEditing(true)
+        }
+      }}
+    >
+      {editing ? (
+        <input
+          ref={input}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={() => setEditing(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setEditing(false)
+            if (e.key === 'Enter') {
+              setEditing(false)
+              onGo(text)
+            }
+          }}
+          placeholder="collection/document"
+          className="min-w-0 flex-1 bg-transparent font-mono text-sm text-zinc-900 outline-none"
+        />
+      ) : (
+        <div className="flex min-w-0 flex-1 cursor-text items-center gap-2 font-mono">
+          {segments.map((s, i) => (
+            <span key={i} className="flex min-w-0 items-center gap-2">
+              {i > 0 && <span className="text-zinc-400">›</span>}
+              {s.to && i < segments.length - 1 ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigate(s.to!)
+                  }}
+                  className="truncate text-sky-600 hover:underline"
+                >
+                  {s.label}
+                </button>
+              ) : (
+                <span className="truncate text-zinc-900" title={s.label}>{s.label}</span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      {version && <span className="ml-3 shrink-0 font-mono text-xs text-zinc-400">{version}</span>}
     </div>
   )
 }

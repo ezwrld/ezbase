@@ -9,7 +9,34 @@ Patch notes and upgrade considerations for every ezbase release. **Agents: this 
 - Compatibility or behavior changes are called out in that release's **Upgrade considerations** instead of being encoded in the version number.
 - Every entry has an **Upgrade considerations** section — "none" means none — and an **Agent prompt** so consuming apps can be told “update ezbase” without a custom brief.
 
-Pin a release tag (`ghcr.io/ezwrld/ezbase:1.16`) to control when you take upgrades; `:latest` tracks the newest release.
+Pin a release tag (`ghcr.io/ezwrld/ezbase:1.17`) to control when you take upgrades; `:latest` tracks the newest release.
+
+---
+
+## v1.17 — 2026-10-27
+
+A Firebase-style console, data shapes, and index management.
+
+### Added
+- **Console redesign.** Collections sidebar with counts; a path bar of clickable segments that also takes typed paths (`games/mlb_stats:823031`, `otherdb/users/abc`); per-collection tabs in the URL:
+  - **Documents** — live table of the newest documents and a document panel (field tree, copy, edit as JSON, delete).
+  - **Query** — where / order by / limit builder with the equivalent SDK call, results with document count, query time, rows read vs returned, the index that served it, and **Add index** when none did.
+  - **Indexes** — every index with kind (primary, built-in, declared, automatic, legacy), fields, size, and reads; declare and remove entries in `indexes.json`; drop legacy GIN indexes; suggestions from queries that ran without an index.
+  - **Shapes** — every field's JSON types and presence as stacked bars, values of enum-like fields, nested fields, flagged inconsistencies, shapes per discriminating field, the derived TypeScript interface, and cleanup scripts.
+  - The overview is a sortable, searchable collections table with document counts and data size.
+- `GET /api/collections/:col/shapes` (admin): sampled shape analysis in Postgres — about 1 s on a 1.7M-document collection. Cleanup scripts use the SDK and handle nested fields and named databases.
+- `GET /api/collections/:col/indexes`, `DELETE /api/collections/:col/indexes/:name` (legacy GIN only), `PUT /api/indexes/collections/:col` (writes `indexes.json`; 409 when it is mounted read-only).
+
+### Changed
+- `X-Ezbase-Index` reports `automatic <index>` when an index ezbase built for the query shape serves it, instead of `undeclared; add …`.
+
+### Upgrade considerations
+- None. To declare indexes from the console, `indexes.json` must be writable (not mounted `:ro`); mounted read-only, the Indexes tab shows them without the add button.
+
+### Agent prompt
+```
+Update this project to ezbase 1.17 (image ghcr.io/ezwrld/ezbase:1.17). GET {ezbase}/api/health must report "1.17". No code changes.
+```
 
 ---
 
