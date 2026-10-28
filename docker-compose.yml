@@ -20,6 +20,7 @@ services:
       PORT: "8080"
       ADMIN_KEY: "test-admin-key"
       RULES_PATH: "/tmp/rules.json"
+      INDEXES_PATH: "/tmp/indexes.json"
       STORAGE_PATH: "/tmp/ezbase-files"
       EZBASE_URL: "http://localhost:7003"
       AUTH_SETTINGS_PATH: "/tmp/auth.json"

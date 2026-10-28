@@ -82,6 +82,7 @@ Rule filters are applied to queries automatically and enforced on writes: in an 
 - **Rules** — per-collection read/write permissions with owner/role/claim filters, enforced on reads and writes; secure defaults on fresh instances
 - **File storage** — buckets with the same permission model
 - **Backups** — streaming tar.gz (JSONL per collection + manifest), granular and query-filtered restore, pipeable: `ez backup | aws s3 cp - s3://…`
+- **Console** — browse and edit documents by path, run queries and see the index each one used, manage indexes, and see every field's real types and presence with the derived TypeScript and cleanup scripts for inconsistent data
 - **Analytics** — per-minute request metrics and a live request feed in the console
 - **Multi-database** — isolated databases per instance, shared auth
 - **SDK** — zero-dependency TypeScript, works in Node/Bun/Deno/browsers

@@ -1,5 +1,5 @@
 import type { AppliedFilter } from './rules.js'
-import { describeIndexUse, queryShape } from './indexes.js'
+import { automaticIndexFor, describeIndexUse, noteUnserved, queryShape, type QueryShape } from './indexes.js'
 import { autoIndexEnabled, ensureQueryIndexes, jsonPath, qualifiedTableName, sanitizeField } from './db.js'
 
 export { autoIndexEnabled, sanitizeField }
@@ -379,6 +379,16 @@ async function ensureWhereIndexes(
   }
 }
 
+/** What serves this shape: a declared or built-in index, the automatic one already built, or nothing yet (remembered as a suggestion). */
+async function indexLabel(database: string, collection: string, shape: QueryShape): Promise<string> {
+  const described = describeIndexUse(collection, shape)
+  if (!described.startsWith('undeclared')) return described
+  const automatic = await automaticIndexFor(database, collection, shape)
+  if (automatic) return `automatic ${automatic}`
+  noteUnserved(database, collection, shape)
+  return described
+}
+
 export async function prepareQuery(
   database: string,
   collection: string,
@@ -394,7 +404,7 @@ export async function prepareQuery(
   uncapped = false
 ): Promise<{ query: string; params: unknown[]; index: string; cap: number | null; stream: boolean }> {
   const useJsonb = autoIndexEnabled()
-  const index = describeIndexUse(collection, queryShape(parseWhere(whereParam), docFilters, orderBy, 'created'))
+  const index = await indexLabel(database, collection, queryShape(parseWhere(whereParam), docFilters, orderBy, 'created'))
   if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
     await ensureWhereIndexes(database, parseWhere(whereParam), collection, orderBy, docFilters, subqueries, true)
   }
@@ -536,7 +546,7 @@ export async function prepareAggregate(
   isAdmin = false,
   subqueries?: SubqueryAccess
 ): Promise<{ query: string; params: unknown[]; index: string; cap: number | null }> {
-  const index = describeIndexUse(collection, queryShape(req.where ?? [], docFilters, undefined, null))
+  const index = await indexLabel(database, collection, queryShape(req.where ?? [], docFilters, undefined, null))
   if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
     await ensureWhereIndexes(database, req.where ?? [], collection, undefined, docFilters, subqueries, false)
   }

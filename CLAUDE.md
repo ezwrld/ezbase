@@ -37,7 +37,7 @@ Detailed specs and plans live in `docs/`:
 - **File Storage** — upload/download/delete files via REST, stored on disk (Docker volume), metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json`
 - **Backups** — streaming tar.gz backups (JSONL per collection + manifest + auth + storage + rules), granular restore (per database/collection/part), query-filtered restore (`where` + time bounds), conflict modes (replace/skip/error), `ez backup --stdout` piping for off-site — see `docs/BACKUPS.md`
 - **Analytics** — built-in request analytics: every API call classified + aggregated into per-minute buckets (internal `_ezbase_metrics` table, 14-day retention), admin endpoints for summary/timeseries/live SSE feed, Activity page in console
-- **Console** — React + Vite + Tailwind SPA with database selector, live-updating document tables, Activity dashboard (stat tiles, requests/min chart, top collections, live request feed), rules editor, and storage browser
+- **Console** — React + Vite + Tailwind SPA: collections sidebar, Firebase-style path bar (click segments or type `collection/doc`), per-collection tabs — Documents (live table + document panel with edit/delete), Query (builder, SDK line, timing, rows read, index used, one-click declare), Indexes (kind/size/reads, declare/remove, drop legacy GIN, suggestions from unindexed queries), Shapes (field types and presence, values, mixed-type issues with cleanup scripts, derived TypeScript) — plus Auth, Activity, Rules, Storage
 - **SDK** — zero-dependency TypeScript client, works in Node/Bun/Deno/browsers
 - **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`, `ez backup`, `ez restore`, `ez fleet`
 - **Fleet** — `fleet/`: one local page for every ezbase instance (Docker-discovered + `~/.ezbase/fleet.json`), health/version drift/traffic/errors/size/backups, per-instance console proxy with the admin key added server-side
@@ -84,6 +84,7 @@ Verify: `curl http://localhost:7003/api/health`
 | `server/src/routes.ts` | CRUD, SSE |
 | `server/src/indexes.ts` | indexes.json load/watch/apply, query-shape matching for `X-Ezbase-Index`, `/api/indexes` status |
 | `server/src/query.ts` | Query + aggregate SQL, `in` subqueries, index hints for JSON where/orderBy |
+| `server/src/shapes.ts` | Collection shape analysis: sampled field walk in Postgres, issues, cleanup scripts, derived TypeScript |
 | `server/src/auth.ts` | BetterAuth instance + `/me` + user management + auth settings |
 | `server/src/auth-settings.ts` | `/data/auth.json` — public URL + OAuth providers (console) |
 | `server/src/middleware.ts` | Auth extraction (BetterAuth sessions + claims), permission checks via rules |
@@ -109,6 +110,10 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | POST | `/collections/:col` | Create document (default db) |
 | GET | `/collections/:col` | List/query documents (default db; `?fields=name,status`) |
 | POST | `/collections/:col/aggregate` | Group + summarize documents (read permission, default db) |
+| GET | `/collections/:col/shapes` | Fields, types, values, distinct shapes, issues + cleanup scripts, derived TypeScript (admin, `?by=field`) |
+| GET | `/collections/:col/indexes` | Every index on the collection: kind, fields, size, reads; declared entries; suggested shapes (admin) |
+| DELETE | `/collections/:col/indexes/:name` | Drop a legacy GIN index (admin) |
+| PUT | `/indexes/collections/:col` | Replace one collection's declared indexes in indexes.json (admin, 409 if read-only) |
 | GET | `/collections/:col/:id` | Get document (default db) |
 | PUT | `/collections/:col/:id` | Replace document (upsert, default db) |
 | PATCH | `/collections/:col/:id` | Partial update (default db) |

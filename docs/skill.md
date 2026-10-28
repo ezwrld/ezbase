@@ -340,6 +340,10 @@ GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
 
 You get what you ask for, never a silently cut result. **Admin key:** no `limit` returns every match (streamed from a database cursor, so size is not a server problem); a `limit` returns at most that many, with no cap. **Users and anonymous clients:** at most 10000 (`EZBASE_MAX_LIMIT`) — no `limit` returns every match up to that and a 400 (`More than 10000 documents match. Pass limit …`) beyond it; a `limit` above 10000 is a 400. **`onSnapshot`/SSE** re-sends its whole result on every change, so it is capped at 10000 for everyone, the same way. Page with `offset`. `limit=0` is an error. Documents may be up to 16 MB (`EZBASE_MAX_JSON_BYTES`).
 
+`X-Ezbase-Index` names what served a list or aggregate: `declared {...}`, `built-in created|updated`, `automatic <index name>` (built by ezbase for an admin query shape), or `undeclared; add {...}` when nothing did — declare that entry (console → Indexes, or `PUT /api/indexes/collections/:col`) so client queries of that shape are indexed too.
+
+**What the data looks like:** `GET /api/collections/:col/shapes` (admin) samples up to 25,000 documents and returns every field path (three levels, arrays as `path[]`) with the JSON types it holds and in how many documents, the values of enum-like fields, distinct document shapes (split by the field that best explains them, or `?by=`), issues — `type-conflict` (a field stored as two types) and `null-and-missing` — each with a cleanup script that uses this SDK, and the TypeScript interface the data implies. The console's Shapes tab draws it.
+
 **Sortable/filterable fields:** Any field in your data (dotted paths included), plus `created` and `updated` (document timestamps). Admin queries and aggregates create btree indexes automatically for their JSON filter/sort shapes — one per shape: a composite of up to three equality fields plus the sort (or of the equality fields alone for aggregates and subqueries), and single-field indexes for the range/`in` fields the composite does not cover. Indexes build in the background with `CREATE INDEX CONCURRENTLY`, so they never block writes; the query that triggers one runs without waiting. Client queries never create persistent database objects. Warm production query shapes once with an admin client so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
 
 ### Real-Time (SSE)
@@ -874,6 +878,10 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 | POST | `/collections/:col` | Create document (201) |
 | GET | `/collections/:col` | List / query docs (`?where=...&orderBy=...&order=...&limit=...`) |
 | POST | `/collections/:col/aggregate` | Group + summarize (read permission). Body: `{ where?, groupBy?, select, having?, orderBy?, order?, limit?, offset? }` |
+| GET | `/collections/:col/shapes` | Fields, types, values, distinct shapes, issues + cleanup scripts, derived TypeScript (admin, `?by=field`) |
+| GET | `/collections/:col/indexes` | Every index on the collection: kind, fields, size, reads; declared entries; suggested shapes (admin) |
+| DELETE | `/collections/:col/indexes/:name` | Drop a legacy GIN index (admin) |
+| PUT | `/indexes/collections/:col` | Replace one collection's declared indexes in indexes.json (admin, 409 if read-only) |
 | GET | `/indexes` | Declared indexes with state, size, reads (admin) |
 | GET | `/collections/:col/:id` | Get doc (404 if missing) |
 | PUT | `/collections/:col/:id` | Replace doc (upsert) |

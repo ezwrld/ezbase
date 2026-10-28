@@ -303,3 +303,165 @@ export async function declaredIndexStatus(): Promise<DeclaredIndexStatus[]> {
   }
   return out
 }
+
+// ── Automatic indexes, unserved shapes, and one collection's indexes ──
+
+const automaticFound = new Set<string>()
+
+/** The automatic index Postgres already holds for this shape, so a query it serves is not reported as unindexed. */
+export async function automaticIndexFor(database: string, collection: string, shape: QueryShape): Promise<string | null> {
+  const suggestion = suggestIndex(shape)
+  if (!suggestion) return null
+  const def = indexDefinition(database, collection, suggestion.equals ?? [], orderColumn(suggestion.orderedBy))
+  if (!def) return null
+  const key = `${database}.${def.name}`
+  if (automaticFound.has(key)) return def.name
+  const rows = await sql`
+    SELECT 1 FROM pg_class c
+    JOIN pg_index i ON i.indexrelid = c.oid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ${`db_${database}`} AND c.relname = ${def.name} AND i.indisvalid`
+  if (rows.length === 0) return null
+  automaticFound.add(key)
+  return def.name
+}
+
+type Unserved = { database: string; collection: string; index: DeclaredIndex; queries: number; lastSeen: number }
+const unserved = new Map<string, Unserved>()
+const UNSERVED_KEPT = 500
+
+/** A query shape that ran with no index serving it: the Indexes tab offers to declare it. */
+export function noteUnserved(database: string, collection: string, shape: QueryShape) {
+  const index = suggestIndex(shape)
+  if (!index) return
+  const key = `${database}/${collection}/${JSON.stringify(index)}`
+  const entry = unserved.get(key)
+  if (entry) {
+    entry.queries++
+    entry.lastSeen = Date.now()
+    return
+  }
+  if (unserved.size >= UNSERVED_KEPT) unserved.delete(unserved.keys().next().value!)
+  unserved.set(key, { database, collection, index, queries: 1, lastSeen: Date.now() })
+}
+
+export type IndexKind = 'primary' | 'built-in' | 'declared' | 'automatic' | 'legacy'
+
+export type CollectionIndex = {
+  name: string
+  kind: IndexKind
+  fields: string[]
+  method: string
+  sizeBytes: number
+  reads: number
+  valid: boolean
+}
+
+/** The fields an index covers, read from its definition: `(data -> 'a'::text), created_at` → `a`, `created`. */
+function indexFields(definition: string): string[] {
+  const body = definition.split(/\sWHERE\s/)[0]!
+  const columns = body.slice(body.indexOf('(') + 1, body.lastIndexOf(')'))
+  const parts: string[] = []
+  let depth = 0
+  let current = ''
+  for (const ch of columns) {
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (ch === ',' && depth === 0) {
+      parts.push(current)
+      current = ''
+    } else current += ch
+  }
+  parts.push(current)
+  return parts.map((part) => {
+    const keys = [...part.matchAll(/'([^']+)'::text/g)].map((m) => m[1])
+    if (keys.length) return keys.join('.')
+    const word = part.replace(/[()\s]/g, '').replace(/jsonb_path_ops$/, '')
+    return word === 'created_at' ? 'created' : word === 'updated_at' ? 'updated' : word
+  })
+}
+
+/** Every index on one collection with its kind, fields, size, and reads; plus declared entries, unserved shapes, and sizes. */
+export async function collectionIndexes(database: string, collection: string) {
+  const schema = `db_${database}`
+  const table = `col_${collection}`
+  const rows = await sql<{ name: string; def: string; size: string; reads: string; valid: boolean; primary: boolean; method: string; note: string | null }[]>`
+    SELECT c.relname AS name, pg_get_indexdef(c.oid) AS def, pg_relation_size(c.oid) AS size,
+           coalesce(s.idx_scan, 0) AS reads, i.indisvalid AS valid, i.indisprimary AS primary,
+           am.amname AS method, obj_description(c.oid, 'pg_class') AS note
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_class t ON t.oid = i.indrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    JOIN pg_am am ON am.oid = c.relam
+    LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = c.oid
+    WHERE n.nspname = ${schema} AND t.relname = ${table}
+    ORDER BY pg_relation_size(c.oid) DESC`
+  const builtIn = new Set([`idx_${database}_${collection}_created`, `idx_${database}_${collection}_updated`].map((n) => n.toLowerCase()))
+  const indexes: CollectionIndex[] = rows.map((row) => ({
+    name: row.name,
+    kind: row.primary ? 'primary'
+      : row.note === DECLARED ? 'declared'
+      : builtIn.has(row.name.toLowerCase()) ? 'built-in'
+      : row.method === 'gin' ? 'legacy'
+      : 'automatic',
+    fields: indexFields(row.def),
+    method: row.method,
+    sizeBytes: Number(row.size),
+    reads: Number(row.reads),
+    valid: row.valid,
+  }))
+  const [sizes] = await sql<{ table: string; indexes: string }[]>`
+    SELECT pg_table_size(${`"${schema}"."${table}"`}::regclass) AS table, pg_indexes_size(${`"${schema}"."${table}"`}::regclass) AS indexes`
+  const existing = new Set(indexes.map((i) => i.name))
+  const declaredHere = (declared.collections[collection]?.indexes ?? []).map((index) => {
+    const def = indexDefinition(database, collection, index.equals ?? [], orderColumn(index.orderedBy))
+    return { ...index, name: def?.name ?? null, built: def ? existing.has(def.name) : false }
+  })
+  const suggested = [...unserved.values()]
+    .filter((u) => u.database === database && u.collection === collection)
+    .filter((u) => !existing.has(indexDefinition(database, collection, u.index.equals ?? [], orderColumn(u.index.orderedBy))?.name ?? ''))
+    .filter((u) => !declaredHere.some((d) => JSON.stringify({ equals: d.equals, orderedBy: d.orderedBy }) === JSON.stringify({ equals: u.index.equals, orderedBy: u.index.orderedBy })))
+    .sort((a, b) => b.queries - a.queries)
+    .map(({ index, queries, lastSeen }) => ({ index, queries, lastSeen }))
+  return {
+    tableBytes: Number(sizes.table),
+    indexBytes: Number(sizes.indexes),
+    indexes,
+    declared: declaredHere,
+    suggested,
+    writable: indexesWritable(),
+  }
+}
+
+function indexesWritable(): boolean {
+  try {
+    fs.accessSync(fs.existsSync(INDEXES_PATH) ? INDEXES_PATH : INDEXES_PATH.slice(0, INDEXES_PATH.lastIndexOf('/')) || '.', fs.constants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Replaces one collection's declared indexes in indexes.json; the watcher builds and drops to match. */
+export function writeCollectionIndexes(collection: string, indexes: DeclaredIndex[]): IndexesFile {
+  if (!indexesWritable()) throw new Error('indexes.json is read-only (mounted volume)')
+  const next: IndexesFile = { collections: { ...declared.collections } }
+  if (indexes.length) next.collections[collection] = { indexes }
+  else delete next.collections[collection]
+  const err = validateIndexes(next)
+  if (err) throw new Error(err)
+  fs.writeFileSync(INDEXES_PATH, JSON.stringify(next, null, 2) + '\n')
+  declared = next
+  apply()
+  return next
+}
+
+/** Drops a GIN index left from before automatic indexing; queries compare btree expressions and never read it. */
+export async function dropLegacyIndex(database: string, collection: string, name: string) {
+  const { indexes } = await collectionIndexes(database, collection)
+  const target = indexes.find((i) => i.name === name)
+  if (!target) throw new Error('Index not found')
+  if (target.kind !== 'legacy') throw new Error(`A ${target.kind} index cannot be dropped here`)
+  await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${schemaName(database)}."${name}"`)
+}
