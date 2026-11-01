@@ -3,7 +3,8 @@ services:
     build:
       context: ..
       dockerfile: fleet/Dockerfile
-    restart: unless-stopped
+    restart: always
+    init: true
     ports:
       - "127.0.0.1:7490:7490"
     environment:
