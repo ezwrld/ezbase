@@ -118,6 +118,10 @@ async function runReported(c: Context, query: string, params: unknown[], index: 
   return rows
 }
 
+// An open cursor holds its transaction, which blocks vacuum and every concurrent index build,
+// so a reader that stops pulling this long loses the stream instead of holding the database.
+const STREAM_IDLE_MS = 60_000
+
 /**
  * An uncapped admin read as a JSON array, pulled from a Postgres cursor 1000 rows at a
  * time, so the server holds one batch however many documents match.
@@ -127,11 +131,26 @@ function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8
   const batches = (sql.unsafe(query, params as any[]) as any).cursor(1000)[Symbol.asyncIterator]() as AsyncIterator<Record<string, unknown>[]>
   let started = false
   let first = true
+  let idle: ReturnType<typeof setTimeout> | undefined
+  let stream: ReadableStreamDefaultController<Uint8Array>
+  const wait = () => {
+    clearTimeout(idle)
+    idle = setTimeout(() => {
+      void batches.return?.()
+      stream.error(new Error('stream reader stopped pulling'))
+    }, STREAM_IDLE_MS)
+  }
   return new ReadableStream({
+    start(controller) {
+      stream = controller
+      wait()
+    },
     async pull(controller) {
+      clearTimeout(idle)
       if (!started) {
         started = true
         controller.enqueue(encoder.encode('['))
+        wait()
         return
       }
       const { value, done } = await batches.next()
@@ -146,8 +165,10 @@ function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8
         first = false
       }
       controller.enqueue(encoder.encode(chunk))
+      wait()
     },
     async cancel() {
+      clearTimeout(idle)
       await batches.return?.()
     },
   })
