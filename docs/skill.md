@@ -181,7 +181,14 @@ const titles = await ez.collection<Todo>('todos')
   .where('done', '==', false)
   .select('title', 'priority')
   .get()
+
+// One document at a time as it arrives, for results too large to hold at once
+for await (const doc of ez.collection('events').where('type', '==', 'click').stream()) {
+  await handle(doc)
+}
 ```
+
+`.stream()` takes the same chain as `.get()` and yields the same documents, but holds one network chunk instead of the whole array: 900,000 documents (1 GB) stream in 8 s at 124 MB of client memory, where `.get()` fails (`ERR_STRING_TOO_LONG`, a single JS string tops out at 512 MB). Use it for exports, migrations and backfills with the admin key. `break` cancels the request and frees the server's cursor; a reader that pauses more than 60 s between chunks loses the stream.
 
 **Operators:** `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`
 
@@ -338,7 +345,7 @@ Raw REST reads use plain comma-separated field names. The document envelope
 GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
 ```
 
-You get what you ask for, never a silently cut result. **Admin key:** no `limit` returns every match (streamed from a database cursor, so size is not a server problem); a `limit` returns at most that many, with no cap. **Users and anonymous clients:** at most 10000 (`EZBASE_MAX_LIMIT`) — no `limit` returns every match up to that and a 400 (`More than 10000 documents match. Pass limit …`) beyond it; a `limit` above 10000 is a 400. **`onSnapshot`/SSE** re-sends its whole result on every change, so it is capped at 10000 for everyone, the same way. Page with `offset`. `limit=0` is an error. Documents may be up to 16 MB (`EZBASE_MAX_JSON_BYTES`).
+You get what you ask for, never a silently cut result. **Admin key:** no `limit` returns every match (streamed from a database cursor, so size is not a server problem); a `limit` returns at most that many, with no cap; read large results with `.stream()`. **Users and anonymous clients:** at most 10000 (`EZBASE_MAX_LIMIT`) — no `limit` returns every match up to that and a 400 (`More than 10000 documents match. Pass limit …`) beyond it; a `limit` above 10000 is a 400. **`onSnapshot`/SSE** re-sends its whole result on every change, so it is capped at 10000 for everyone, the same way. Page with `offset`. `limit=0` is an error. Documents may be up to 16 MB (`EZBASE_MAX_JSON_BYTES`).
 
 `X-Ezbase-Index` names what served a list or aggregate: `declared {...}`, `built-in created|updated`, `automatic <index name>` (built by ezbase for an admin query shape), or `undeclared; add {...}` when nothing did — declare that entry (console → Indexes, or `PUT /api/indexes/collections/:col`) so client queries of that shape are indexed too.
 
