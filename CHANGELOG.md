@@ -13,6 +13,23 @@ Pin a release tag (`ghcr.io/ezwrld/ezbase:1.17`) to control when you take upgrad
 
 ---
 
+## v1.18 — 2026-11-02
+
+A stalled streamed read no longer holds the database.
+
+### Fixed
+- Admin reads over the row cap stream from a Postgres cursor. A client that stopped reading but kept its connection open held the cursor's transaction indefinitely, which blocked vacuum and every concurrent index build (an Aura deploy waited 30 minutes on one). The stream now closes its cursor when the reader has not pulled for 60 seconds, and the response ends with an error.
+
+### Upgrade considerations
+- A reader that pauses more than 60 seconds between chunks of a streamed read (over 10,000 rows, or no limit) loses the stream. Read it continuously or page with `offset`.
+
+### Agent prompt
+```
+Update this project to ezbase 1.18 (image ghcr.io/ezwrld/ezbase:1.18). GET {ezbase}/api/health must report "1.18". No code changes.
+```
+
+---
+
 ## v1.17 — 2026-10-27
 
 A Firebase-style console, data shapes, and index management.
