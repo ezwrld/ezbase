@@ -156,6 +156,56 @@ function sseConnect(
   return () => controller.abort()
 }
 
+/**
+ * Yields each document of a list response as its bytes arrive, so memory holds one
+ * network chunk however many documents match. Breaking out of the loop cancels the
+ * request, which closes the server's cursor.
+ */
+async function* streamDocs<D>(url: string, headers: Record<string, string>, errorPrefix: string): AsyncGenerator<D> {
+  const res = await fetch(url, { headers })
+  if (!res.ok || !res.body) throw new Error(`${errorPrefix}: ${res.status} ${await res.text()}`)
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let pos = 0
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+  let complete = false
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      for (; pos < buf.length; pos++) {
+        const ch = buf.charCodeAt(pos)
+        if (inString) {
+          if (escaped) escaped = false
+          else if (ch === 92) escaped = true
+          else if (ch === 34) inString = false
+        } else if (ch === 34) {
+          inString = true
+        } else if (ch === 123 || ch === 91) {
+          if (depth === 1) start = pos
+          depth++
+        } else if (ch === 125 || ch === 93) {
+          depth--
+          if (depth === 1) yield JSON.parse(buf.slice(start, pos + 1))
+          else if (depth === 0) complete = true
+        }
+      }
+      const keep = depth > 1 ? start : pos
+      buf = buf.slice(keep)
+      pos -= keep
+      start -= keep
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+  if (!complete) throw new Error(`${errorPrefix}: response ended before the last document`)
+}
+
 // ── Auth client ───────────────────────────────────────────────
 class AuthClient {
   private _token: string | null = null
@@ -634,6 +684,11 @@ class CollectionRef<T = Record<string, unknown>> {
     return res.json()
   }
 
+  /** Every document, one at a time as it arrives: `for await (const doc of ez.collection('x').stream())`. */
+  stream(): AsyncGenerator<Document<T>> {
+    return this._query().stream()
+  }
+
   onSnapshot(
     callback: (docs: Document<T>[]) => void,
     onError?: (err: Error) => void
@@ -869,6 +924,15 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
     const res = await fetch(url, { headers: this.ez._authHeaders() })
     if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
     return res.json()
+  }
+
+  /**
+   * The matching documents one at a time as they arrive, for results too large to hold
+   * at once: `for await (const doc of query.stream())`. With the admin key and no
+   * limit it reads every match; client reads keep the row cap of `get()`.
+   */
+  stream(): AsyncGenerator<Document<Result>> {
+    return streamDocs<Document<Result>>(`${this._basePath()}${this.buildParams()}`, this.ez._authHeaders(), this.ez['_errorPrefix'])
   }
 
   onSnapshot(

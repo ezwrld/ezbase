@@ -48,6 +48,7 @@ await ez.auth.signUp({ email: 'you@example.com', password: 'change-me-now' })
 await ez.collection('todos').add({ title: 'Ship it', done: false })
 const todos = await ez.collection('todos').where('done', '==', false).get()
 const titles = await ez.collection('todos').select('title').get()
+for await (const doc of ez.collection('events').stream()) handle(doc)
 
 // Realtime
 ez.collection('todos').onSnapshot((docs) => render(docs))

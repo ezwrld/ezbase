@@ -13,6 +13,26 @@ Pin a release tag (`ghcr.io/ezwrld/ezbase:1.17`) to control when you take upgrad
 
 ---
 
+## v1.19 — 2026-11-02
+
+Read results of any size from the SDK, and a disconnected reader always frees its cursor.
+
+### Added
+- SDK `@ezwrld/ezbase` 1.9.0: `.stream()` on collections and queries yields documents one at a time as they arrive: `for await (const doc of ez.collection('x').where(...).stream())`. 900,000 documents (1 GB) read in 8 s at 124 MB of client memory; `.get()` on the same result fails with `ERR_STRING_TOO_LONG`. Breaking out of the loop cancels the request.
+
+### Fixed
+- A client that disconnected while the server was fetching the next batch of a streamed read left the Postgres cursor open for good (`active | ClientRead`, cleared only by a restart), past the 1.18 idle timeout. The server now closes it as soon as that batch lands.
+
+### Upgrade considerations
+None.
+
+### Agent prompt
+```
+Update this project to ezbase 1.19 (image ghcr.io/ezwrld/ezbase:1.19, SDK @ezwrld/ezbase 1.9.0). GET {ezbase}/api/health must report "1.19". Anywhere this project reads a large result with .get() and then loops over it (exports, migrations, backfills), use `for await (const doc of query.stream())` instead.
+```
+
+---
+
 ## v1.18 — 2026-11-02
 
 A stalled streamed read no longer holds the database.

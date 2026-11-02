@@ -131,12 +131,20 @@ function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8
   const batches = (sql.unsafe(query, params as any[]) as any).cursor(1000)[Symbol.asyncIterator]() as AsyncIterator<Record<string, unknown>[]>
   let started = false
   let first = true
+  let closed = false
   let idle: ReturnType<typeof setTimeout> | undefined
   let stream: ReadableStreamDefaultController<Uint8Array>
+  // postgres.js closes a cursor only between batches, so a close during an in-flight
+  // batch is repeated by pull once that batch lands.
+  const close = () => {
+    closed = true
+    clearTimeout(idle)
+    void batches.return?.()
+  }
   const wait = () => {
     clearTimeout(idle)
     idle = setTimeout(() => {
-      void batches.return?.()
+      close()
       stream.error(new Error('stream reader stopped pulling'))
     }, STREAM_IDLE_MS)
   }
@@ -154,6 +162,10 @@ function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8
         return
       }
       const { value, done } = await batches.next()
+      if (closed) {
+        close()
+        return
+      }
       if (done) {
         controller.enqueue(encoder.encode(']'))
         controller.close()
@@ -167,9 +179,8 @@ function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8
       controller.enqueue(encoder.encode(chunk))
       wait()
     },
-    async cancel() {
-      clearTimeout(idle)
-      await batches.return?.()
+    cancel() {
+      close()
     },
   })
 }
