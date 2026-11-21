@@ -48,6 +48,13 @@ export function ago(ms: number): string {
   return `${Math.floor(s / 86400)}d`
 }
 
+export function duration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`
+  if (ms < 3_600_000) return `${(ms / 60_000).toFixed(1)} min`
+  return `${(ms / 3_600_000).toFixed(1)} h`
+}
+
 export function pct(part: number, whole: number): string {
   if (!whole) return '0%'
   const v = (part / whole) * 100

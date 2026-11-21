@@ -149,7 +149,7 @@ function addBufferEntry(pack: tar.Pack, name: string, content: string) {
 
 async function streamCollectionJsonl(ws: fs.WriteStream, database: string, collection: string) {
   const table = qualifiedTable(database, collection)
-  const cursor = sql`SELECT id, data, created_at, updated_at FROM ${table} ORDER BY created_at`.cursor(1000)
+  const cursor = sql`SELECT id, data, created_at, updated_at FROM ${table}`.cursor(1000)
   for await (const rows of cursor) {
     for (const row of rows) {
       const line = JSON.stringify({

@@ -8,7 +8,7 @@ A self-hosted document database. One Docker image, one port, no schema boilerpla
 
 ezbase is a **DX wrapper**, not a database engine. Under the hood:
 
-- **Postgres** — document storage (JSONB per-collection tables with per-query btree indexes), pub/sub (LISTEN/NOTIFY), auth storage
+- **Postgres** — document storage (JSONB per-collection tables with declared btree indexes), pub/sub (LISTEN/NOTIFY), auth storage
 - **BetterAuth** — email/password authentication, session tokens
 - **Hono** — REST API framework (runs on Bun)
 - **Nginx** — reverse proxy, serves console UI, single port (7003)
@@ -222,10 +222,16 @@ Realtime subscriptions refresh on changes to the queried collection only.
 
 ### Indexes
 
-Declare the indexes your queries need in `indexes.json`, next to `rules.json`,
-and mount it at `/data/indexes.json`. ezbase builds each one in the background
-(`CREATE INDEX CONCURRENTLY`, never blocking writes), reloads when the file
-changes, and drops an index you remove from the file.
+`indexes.json` is the only source of indexes. Declare the indexes your queries
+need next to `rules.json` and mount it at `/data/indexes.json`. On boot and
+whenever the file changes, ezbase builds every declared index in the background
+(`CREATE INDEX CONCURRENTLY`, never blocking writes) and then drops every other
+index on every collection table, in every database. Primary keys and unique
+indexes are never touched. Queries never create indexes.
+
+Without the file, ezbase leaves existing indexes alone and builds none. A
+collection then has only its primary key, so declare even
+`{ "orderedBy": "created" }` for a large collection read newest-first.
 
 ```json
 {
@@ -245,7 +251,7 @@ Keys under `collections` are collection names. Each index lists:
 | Key | Meaning |
 |-----|---------|
 | `equals` | Up to 3 fields the query filters with `==` or `in` (dotted paths allowed) |
-| `orderedBy` | The one field the index keeps sorted: the query's `orderBy`, or the field it filters with `<` `>` `<=` `>=`. `created` and `updated` are the document timestamps. |
+| `orderedBy` | The one field the index keeps sorted: the query's `orderBy`, or the field it filters with `<` `>` `<=` `>=`. `created` and `updated` are the document timestamps; a list without `orderBy` is ordered by `created`. |
 
 A query uses an index when every `equals` field appears in its `==`/`in`
 filters and its `orderBy` (or range field) is the index's `orderedBy`. Field
@@ -266,10 +272,13 @@ await ez.collection('player_game_stats')
 ```text
 X-Ezbase-Index: declared {"equals":["gameId"],"orderedBy":"updated"}
 X-Ezbase-Index: undeclared; add {"equals":["sport"],"orderedBy":"observedAt"}
-X-Ezbase-Index: built-in created
+X-Ezbase-Index: full scan
 ```
 
-`undeclared; add …` is the exact entry to paste into `indexes.json`.
+`undeclared; add …` is the exact entry to paste into `indexes.json`. ezbase
+records every undeclared query under that entry with its count and total
+database time (14 days, internal `_ezbase_unserved` table). The console's
+Indexes tab lists them slowest first, each with a Declare button.
 `Server-Timing: db;dur=…` carries the query time. With the admin key,
 `.explain()` (or the `X-Ezbase-Explain: 1` request header) runs EXPLAIN ANALYZE
 and reports what Postgres actually did:
@@ -286,12 +295,21 @@ await ez.collection('player_game_stats')
 suggested entry. `ez.indexes()` (`GET /api/indexes`) lists every declared index
 with its state (`ready`, `building`, `queued`), size and reads.
 
+**Starting a file.** `GET /api/indexes/suggested` (admin) returns a complete
+`indexes.json`: what is declared, every existing index queries have read (as the
+entry that adopts it, so nothing rebuilds), and every recorded undeclared shape,
+most used first. Review it, commit it, mount it:
+
+```bash
+curl -s -H "Authorization: Bearer $EZBASE_ADMIN_KEY" $EZBASE_URL/api/indexes/suggested > indexes.json
+```
+
+Declaring from the console on an instance with no file writes this same
+starting file plus the new entry.
+
 **When you write a query, declare its index in the same change.** A new
 `where`/`orderBy` shape gets a line in `indexes.json`; run the query once with
 `.explain()` to confirm `declared` and `read` ≈ `returned`.
-
-Undeclared query shapes run by the admin key still get an automatic index on
-first use. Declaring the same shape adopts that index instead of rebuilding it.
 
 ### Aggregation
 
@@ -347,11 +365,11 @@ GET /api/collections/todos?where=[["done","==",false]]&fields=title,priority
 
 You get what you ask for, never a silently cut result. **Admin key:** no `limit` returns every match (streamed from a database cursor, so size is not a server problem); a `limit` returns at most that many, with no cap; read large results with `.stream()`. **Users and anonymous clients:** at most 10000 (`EZBASE_MAX_LIMIT`) — no `limit` returns every match up to that and a 400 (`More than 10000 documents match. Pass limit …`) beyond it; a `limit` above 10000 is a 400. **`onSnapshot`/SSE** re-sends its whole result on every change, so it is capped at 10000 for everyone, the same way. Page with `offset`. `limit=0` is an error. Documents may be up to 16 MB (`EZBASE_MAX_JSON_BYTES`).
 
-`X-Ezbase-Index` names what served a list or aggregate: `declared {...}`, `built-in created|updated`, `automatic <index name>` (built by ezbase for an admin query shape), or `undeclared; add {...}` when nothing did — declare that entry (console → Indexes, or `PUT /api/indexes/collections/:col`) so client queries of that shape are indexed too.
+`X-Ezbase-Index` names what served a list or aggregate: `declared {...}`, or `undeclared; add {...}` when no declared index did — declare that entry (console → Indexes, or `PUT /api/indexes/collections/:col`).
 
 **What the data looks like:** `GET /api/collections/:col/shapes` (admin) samples up to 25,000 documents and returns every field path (three levels, arrays as `path[]`) with the JSON types it holds and in how many documents, the values of enum-like fields, distinct document shapes (split by the field that best explains them, or `?by=`), issues — `type-conflict` (a field stored as two types) and `null-and-missing` — each with a cleanup script that uses this SDK, and the TypeScript interface the data implies. The console's Shapes tab draws it.
 
-**Sortable/filterable fields:** Any field in your data (dotted paths included), plus `created` and `updated` (document timestamps). Admin queries and aggregates create btree indexes automatically for their JSON filter/sort shapes — one per shape: a composite of up to three equality fields plus the sort (or of the equality fields alone for aggregates and subqueries), and single-field indexes for the range/`in` fields the composite does not cover. Indexes build in the background with `CREATE INDEX CONCURRENTLY`, so they never block writes; the query that triggers one runs without waiting. Client queries never create persistent database objects. Warm production query shapes once with an admin client so SaaS-shaped queries like `where status == 'pending' orderBy observedAt limit 25` stay index scans as the collection grows. `created`/`updated` are real columns (`created_at` is always indexed; `updated_at` too).
+**Sortable/filterable fields:** Any field in your data (dotted paths included), plus `created` and `updated` (document timestamps, real columns). Only declared indexes exist (see Indexes above), so `where status == 'pending' orderBy observedAt limit 25` stays an index scan as the collection grows once `{ "equals": ["status"], "orderedBy": "observedAt" }` is declared.
 
 ### Real-Time (SSE)
 
@@ -887,9 +905,9 @@ All endpoints under `/api` on port 7003. Auth via `Authorization: Bearer <token>
 | POST | `/collections/:col/aggregate` | Group + summarize (read permission). Body: `{ where?, groupBy?, select, having?, orderBy?, order?, limit?, offset? }` |
 | GET | `/collections/:col/shapes` | Fields, types, values, distinct shapes, issues + cleanup scripts, derived TypeScript (admin, `?by=field`) |
 | GET | `/collections/:col/indexes` | Every index on the collection: kind, fields, size, reads; declared entries; suggested shapes (admin) |
-| DELETE | `/collections/:col/indexes/:name` | Drop a legacy GIN index (admin) |
 | PUT | `/indexes/collections/:col` | Replace one collection's declared indexes in indexes.json (admin, 409 if read-only) |
 | GET | `/indexes` | Declared indexes with state, size, reads (admin) |
+| GET | `/indexes/suggested` | A complete indexes.json: declared, existing indexes with reads, undeclared query shapes (admin) |
 | GET | `/collections/:col/:id` | Get doc (404 if missing) |
 | PUT | `/collections/:col/:id` | Replace doc (upsert) |
 | PATCH | `/collections/:col/:id` | Partial update (merge); send the GET `ETag` as `If-Match` for an atomic conditional update |
@@ -1042,7 +1060,6 @@ For agents working **on ezbase**, not in an app that uses it:
 | `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | SMTP details. Port default 587 (465 = implicit TLS). |
 | `EZBASE_REQUIRE_EMAIL_VERIFICATION` | No | `true` = users must verify email before signing in. Needs SMTP. |
 | `EZBASE_RATE_LIMIT` | No | Auth brute-force limiting (3 attempts/10s per IP on sign-in/sign-up/change-password). **Always on**; `false` disables — only for test stacks that hammer auth endpoints. |
-| `EZBASE_AUTO_INDEX` | No | Default on: admin query shapes create btree indexes on their JSON expressions (concurrently, in the background); collections get no GIN. `false`: no automatic indexes; queries use `@>` containment and every collection gets a GIN on `data`. Warm real query shapes with an admin client after deploy. |
 | `DATABASE_URL` | No | Only if using external Postgres. |
 | `RULES_PATH` | No | Path to rules.json. Default: `/data/rules.json`. |
 | `INDEXES_PATH` | No | Path to indexes.json. Default: `/data/indexes.json`. |
