@@ -679,9 +679,7 @@ class CollectionRef<T = Record<string, unknown>> {
   }
 
   async get(): Promise<Document<T>[]> {
-    const res = await fetch(this._basePath(), { headers: this.ez._authHeaders() })
-    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
-    return res.json()
+    return this._query().get()
   }
 
   /** Every document, one at a time as it arrives: `for await (const doc of ez.collection('x').stream())`. */
@@ -919,11 +917,11 @@ class QueryRef<T = Record<string, unknown>, Result = T> {
     return res.json()
   }
 
+  /** Collected from stream(), so no single string holds the response (JS strings top out at 512 MB). */
   async get(): Promise<Document<Result>[]> {
-    const url = `${this._basePath()}${this.buildParams()}`
-    const res = await fetch(url, { headers: this.ez._authHeaders() })
-    if (!res.ok) throw new Error(`${this.ez['_errorPrefix']}: ${res.status} ${await res.text()}`)
-    return res.json()
+    const docs: Document<Result>[] = []
+    for await (const doc of this.stream()) docs.push(doc)
+    return docs
   }
 
   /**

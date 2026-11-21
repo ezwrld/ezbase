@@ -16,6 +16,11 @@ RUN bun run build
 
 FROM debian:bookworm-slim
 
+# Existing volumes hold postgres data owned by uid 100 / gid 102, so the user is pinned
+# before apt would hand it whatever uid is free.
+RUN groupadd --system --gid 102 postgres \
+    && useradd --system --uid 100 --gid 102 --home-dir /var/lib/postgresql --shell /bin/bash postgres
+
 # Install postgres, nginx, supervisor
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
