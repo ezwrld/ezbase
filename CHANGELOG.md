@@ -13,6 +13,23 @@ Pin a release tag (`ghcr.io/ezwrld/ezbase:1.17`) to control when you take upgrad
 
 ---
 
+## SDK 1.10.0 — 2026-11-21
+
+`.get()` reads results of any size.
+
+### Fixed
+- `.get()` parsed the response with `res.json()`, which decodes the whole body into one string first. JavaScript strings top out at 512 MB, so a larger result failed with `ERR_STRING_TOO_LONG` (683,347 real documents, 1.2 GB). `.get()` now collects from the same incremental parser as `.stream()`: that read returns every document in 13 s. Results and errors are otherwise unchanged.
+
+### Upgrade considerations
+None. SDK only; works with every image.
+
+### Agent prompt
+```
+Update @ezwrld/ezbase to 1.10.0. No code changes.
+```
+
+---
+
 ## v1.19 — 2026-11-02
 
 Read results of any size from the SDK, and a disconnected reader always frees its cursor.

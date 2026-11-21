@@ -188,7 +188,7 @@ for await (const doc of ez.collection('events').where('type', '==', 'click').str
 }
 ```
 
-`.stream()` takes the same chain as `.get()` and yields the same documents, but holds one network chunk instead of the whole array: 900,000 documents (1 GB) stream in 8 s at 124 MB of client memory, where `.get()` fails (`ERR_STRING_TOO_LONG`, a single JS string tops out at 512 MB). Use it for exports, migrations and backfills with the admin key. `break` cancels the request and frees the server's cursor; a reader that pauses more than 60 s between chunks loses the stream.
+`.stream()` takes the same chain as `.get()` and yields the same documents, but holds one network chunk instead of the whole array: 900,000 documents (1 GB) stream in 8 s at 124 MB of client memory. `.get()` reads the same result into an array, so its memory grows with the result (683,347 documents, 1.2 GB: 13 s, 1.6 GB). Use `.stream()` for exports, migrations and backfills with the admin key. `break` cancels the request and frees the server's cursor; a reader that pauses more than 60 s between chunks loses the stream.
 
 **Operators:** `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`
 
