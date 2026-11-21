@@ -13,19 +13,20 @@ Pin a release tag (`ghcr.io/ezwrld/ezbase:1.17`) to control when you take upgrad
 
 ---
 
-## SDK 1.10.0 — 2026-11-21
+## v1.20 — 2026-11-21
 
-`.get()` reads results of any size.
+`.get()` reads results of any size, and images built from now on open existing data.
 
 ### Fixed
-- `.get()` parsed the response with `res.json()`, which decodes the whole body into one string first. JavaScript strings top out at 512 MB, so a larger result failed with `ERR_STRING_TOO_LONG` (683,347 real documents, 1.2 GB). `.get()` now collects from the same incremental parser as `.stream()`: that read returns every document in 13 s. Results and errors are otherwise unchanged.
+- **Image builds.** Debian's packages now create `systemd-network` before Postgres, so a fresh build gave the `postgres` user uid 997 instead of 100. Every existing volume's data is owned by uid 100, so that image could not start on it (`pg_ctl: could not open PID file "/data/postgres/postmaster.pid": Permission denied`). The Dockerfile now pins `postgres` to uid 100 / gid 102. Published images up to 1.19 were not affected.
+- **SDK `@ezwrld/ezbase` 1.10.0: `.get()`** parsed the response with `res.json()`, which decodes the whole body into one string first. JavaScript strings top out at 512 MB, so a larger result failed with `ERR_STRING_TOO_LONG` (683,347 real documents, 1.2 GB). `.get()` now collects from the same incremental parser as `.stream()`: that read returns every document in 13 s. Results and errors are otherwise unchanged.
 
 ### Upgrade considerations
-None. SDK only; works with every image.
+None.
 
 ### Agent prompt
 ```
-Update @ezwrld/ezbase to 1.10.0. No code changes.
+Update this project to ezbase 1.20 (image ghcr.io/ezwrld/ezbase:1.20, SDK @ezwrld/ezbase 1.10.0). GET {ezbase}/api/health must report "1.20". No code changes.
 ```
 
 ---

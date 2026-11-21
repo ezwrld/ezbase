@@ -83,7 +83,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           # Extract this version's section from CHANGELOG.md
-          NOTES=$(awk "/^## v${VERSION}([^0-9]|$)/{flag=1;next} /^## /{flag=0} flag" CHANGELOG.md)
+          NOTES=$(awk "/^## v${VERSION}([^0-9]|$)/{flag=1;next} /^## v/{flag=0} flag" CHANGELOG.md)
           if [ -z "$NOTES" ]; then
             NOTES="Release v${VERSION}. No CHANGELOG entry was written for this release — see commit history."
           fi
