@@ -28,16 +28,16 @@ Detailed specs and plans live in `docs/`:
 - **Document CRUD** — create, read, update (full + partial), delete via REST
 - **Real-time** — SSE subscriptions at collection, document, and query level
 - **Query filtering** — `where` (`== != < > <= >= in`, dotted nested paths, `in` arrays or same-database subqueries), `orderBy`, `order`, `limit`
-- **Declared indexes** — `/data/indexes.json` (`collections.<name>.indexes: [{ equals, orderedBy }]`), built concurrently, hot-reloaded, removed entries dropped; every list/aggregate response carries `X-Ezbase-Index` (declared entry or the one to add) and `Server-Timing`; admin `X-Ezbase-Explain: 1` / SDK `.explain()` adds the real plan; `GET /api/indexes` status
+- **Declared indexes** — `/data/indexes.json` (`collections.<name>.indexes: [{ equals, orderedBy }]`) is the only source of indexes: when present, ezbase builds declared ones concurrently and drops every other non-unique index on `col_*` tables; without it, existing indexes are left alone. Queries never run DDL. Every list/aggregate response carries `X-Ezbase-Index` (declared entry or the one to add) and `Server-Timing`; undeclared queries are recorded with count + total ms in `_ezbase_unserved` (14 days); admin `X-Ezbase-Explain: 1` / SDK `.explain()` adds the real plan; `GET /api/indexes` status; `GET /api/indexes/suggested` a complete starting file
 - **Aggregation** — `POST .../aggregate`: `groupBy` + `count`/`countDistinct`/`sum`/`avg`/`min`/`max`, `having`, ordering; runs in Postgres under a 15s statement timeout
 - **Multi-database** — multiple isolated databases per instance, each a Postgres schema (`db_*`), created on an admin's first write
-- **Per-collection tables** — each collection gets its own `col_<name>` Postgres table; admin query shapes get btree indexes on their JSON expressions
+- **Per-collection tables** — each collection gets its own `col_<name>` Postgres table with only a primary key; declared indexes are btrees on its JSON expressions
 - **Auth** — BetterAuth (email/password, OAuth). Console → Auth for public URL + providers (`/data/auth.json`) and a users table (email, UID, provider, created, last signed in). Per-collection permissions, claims, user management. Password reset (SMTP optional), rate limiting.
 - **Rules** — Declarative `rules.json` for per-collection access control + claim-based document filters (replaces `_ezbase_config` Postgres table)
 - **File Storage** — upload/download/delete files via REST, stored on disk (Docker volume), metadata in Postgres (`_ezbase_files`), bucket permissions via `rules.json`
 - **Backups** — streaming tar.gz backups (JSONL per collection + manifest + auth + storage + rules), granular restore (per database/collection/part), query-filtered restore (`where` + time bounds), conflict modes (replace/skip/error), `ez backup --stdout` piping for off-site — see `docs/BACKUPS.md`
 - **Analytics** — built-in request analytics: every API call classified + aggregated into per-minute buckets (internal `_ezbase_metrics` table, 14-day retention), admin endpoints for summary/timeseries/live SSE feed, Activity page in console
-- **Console** — React + Vite + Tailwind SPA: collections sidebar, Firebase-style path bar (click segments or type `collection/doc`), per-collection tabs — Documents (live table + document panel with edit/delete), Query (builder, SDK line, timing, rows read, index used, one-click declare), Indexes (kind/size/reads, declare/remove, drop legacy GIN, suggestions from unindexed queries), Shapes (field types and presence, values, mixed-type issues with cleanup scripts, derived TypeScript) — plus Auth, Activity, Rules, Storage
+- **Console** — React + Vite + Tailwind SPA: collections sidebar, Firebase-style path bar (click segments or type `collection/doc`), per-collection tabs — Documents (live table + document panel with edit/delete), Query (builder, SDK line, timing, rows read, index used, one-click declare), Indexes (declared/undeclared, size/reads, declare/remove, undeclared queries ranked by total time), Shapes (field types and presence, values, mixed-type issues with cleanup scripts, derived TypeScript) — plus Auth, Activity, Rules, Storage
 - **SDK** — zero-dependency TypeScript client, works in Node/Bun/Deno/browsers
 - **CLI** — `ez up`, `ez down`, `ez down --nuke`, `ez logs`, `ez backup`, `ez restore`, `ez fleet`
 - **Fleet** — `fleet/`: one local page for every ezbase instance (Docker-discovered + `~/.ezbase/fleet.json`), health/version drift/traffic/errors/size/backups, per-instance console proxy with the admin key added server-side
@@ -82,8 +82,8 @@ Verify: `curl http://localhost:7003/api/health`
 | `server/src/backups.ts` | Backup/restore engine: streaming tar.gz create, list/download/delete, filtered restore |
 | `server/src/analytics.ts` | Request analytics: classification middleware, minute-bucket aggregation, summary/timeseries/live endpoints |
 | `server/src/routes.ts` | CRUD, SSE |
-| `server/src/indexes.ts` | indexes.json load/watch/apply, query-shape matching for `X-Ezbase-Index`, `/api/indexes` status |
-| `server/src/query.ts` | Query + aggregate SQL, `in` subqueries, index hints for JSON where/orderBy |
+| `server/src/indexes.ts` | indexes.json load/watch/sync (build declared, drop the rest), query-shape matching for `X-Ezbase-Index`, unserved-query recording, `/api/indexes` status + suggested file |
+| `server/src/query.ts` | Query + aggregate SQL, `in` subqueries |
 | `server/src/shapes.ts` | Collection shape analysis: sampled field walk in Postgres, issues, cleanup scripts, derived TypeScript |
 | `server/src/auth.ts` | BetterAuth instance + `/me` + user management + auth settings |
 | `server/src/auth-settings.ts` | `/data/auth.json` — public URL + OAuth providers (console) |
@@ -111,8 +111,8 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 | GET | `/collections/:col` | List/query documents (default db; `?fields=name,status`) |
 | POST | `/collections/:col/aggregate` | Group + summarize documents (read permission, default db) |
 | GET | `/collections/:col/shapes` | Fields, types, values, distinct shapes, issues + cleanup scripts, derived TypeScript (admin, `?by=field`) |
-| GET | `/collections/:col/indexes` | Every index on the collection: kind, fields, size, reads; declared entries; suggested shapes (admin) |
-| DELETE | `/collections/:col/indexes/:name` | Drop a legacy GIN index (admin) |
+| GET | `/collections/:col/indexes` | Every index on the collection: kind, fields, size, reads; declared entries; undeclared query shapes by total time (admin) |
+| GET | `/indexes/suggested` | A complete indexes.json to start from (admin) |
 | PUT | `/indexes/collections/:col` | Replace one collection's declared indexes in indexes.json (admin, 409 if read-only) |
 | GET | `/collections/:col/:id` | Get document (default db) |
 | PUT | `/collections/:col/:id` | Replace document (upsert, default db) |
@@ -167,7 +167,7 @@ Legacy routes (`/api/collections/...`) target the `default` database. Named data
 Collection and database names keep their case (`bookingFormVisits`). Hand-built SQL must name tables and schemas through `qualifiedTableName` / `schemaName` (quoted) or `qualifiedTable` (postgres.js helper); never interpolate `db_${database}.col_${collection}` yourself. CI fails on that pattern.
 
 
-Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with btrees on `created_at`/`updated_at` and auto btrees on the JSON expressions admin queries use (one per query shape, built concurrently). With `EZBASE_AUTO_INDEX=false`, queries use `@>` containment and each table gets a GIN on `data` instead. Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
+Each database is a Postgres schema (`db_<name>`). Per-collection tables within each schema: `db_<name>.col_<col>(id TEXT PK, data JSONB, created_at BIGINT, updated_at BIGINT)` with only a primary key; every other index comes from `indexes.json` (btrees on `data->'field'` expressions, or `created_at`/`updated_at`). Auth managed by BetterAuth in the `public` schema (`user`, `session`, `account`, `verification` tables), shared across all databases. Users have `role` (TEXT, default `"user"`) and `claims` (TEXT, default `"{}"` — serialized JSON) columns.
 
 Collection permissions are defined in `/data/rules.json` (one file per instance, covers all databases). Format:
 

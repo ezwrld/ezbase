@@ -106,9 +106,10 @@ export function QueryTab({ database, collection }: { database: string; collectio
   const declare = async () => {
     if (!suggestion) return
     try {
-      const current = await api<{ declared: { equals?: string[]; orderedBy?: string }[] }>(
+      const current = await api<{ declared: { equals?: string[]; orderedBy?: string }[]; managed: boolean }>(
         `${dbBase(database)}/collections/${encodeURIComponent(collection)}/indexes`
       )
+      if (!current.managed && !window.confirm('Manage every index from indexes.json? Indexes no query has read, on every collection, will be dropped.')) return
       const keep = current.declared.map(({ equals, orderedBy }) => ({ ...(equals?.length ? { equals } : {}), ...(orderedBy ? { orderedBy } : {}) }))
       await api(`/api/indexes/collections/${encodeURIComponent(collection)}`, {
         method: 'PUT',
@@ -254,8 +255,6 @@ export function QueryTab({ database, collection }: { database: string; collectio
 function indexLabel(result: Result): { text: string; detail?: string; bg: string; fg: string } | null {
   const label = result.index
   if (!label) return null
-  if (label.startsWith('automatic ')) return { text: 'automatic', detail: label.slice('automatic '.length), bg: '#dcfce7', fg: '#15803d' }
   if (label.startsWith('declared ')) return { text: 'declared', detail: label.slice('declared '.length), bg: '#e0f2fe', fg: '#0369a1' }
-  if (label.startsWith('built-in ')) return { text: 'built-in', detail: label.slice('built-in '.length), bg: '#f4f4f5', fg: '#52525b' }
   return { text: result.plan?.index === 'seq scan' || label === 'full scan' ? 'seq scan' : 'no index', bg: '#fef3c7', fg: '#b45309' }
 }

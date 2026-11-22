@@ -13,6 +13,43 @@ Pin a release tag (`ghcr.io/ezwrld/ezbase:1.17`) to control when you take upgrad
 
 ---
 
+## v1.21 — 2026-11-21
+
+`indexes.json` is the only source of indexes. Queries never create one.
+
+### Changed
+- **Queries never run DDL.** Admin queries used to build an index for every new filter/sort shape and keep it forever. In Aura prod that left 297 indexes using 86 GB, 229 of them unread, and `market_quotes` carried 169 GB of indexes on 93 GB of data.
+- **`indexes.json` owns every index on collection tables.** When `/data/indexes.json` exists, ezbase builds each declared index (`CREATE INDEX CONCURRENTLY`, one at a time, invalid leftovers rebuilt) and then drops every other non-unique index on every `col_*` table in every database, including hand-made ones. Primary keys and unique indexes are never touched. Runs on boot and on every change to the file. Without the file, existing indexes are left alone.
+- **Collections get only a primary key.** The automatic `created_at`/`updated_at` indexes are gone; declare `{ "orderedBy": "created" }` (or `"updated"`) where a large collection is read by time. Declaring it adopts the existing index by name, as does declaring any shape an earlier version built.
+- **One query mode.** `EZBASE_AUTO_INDEX` and its `@>` containment / GIN mode are removed. Every filter compiles to `data->'field'` expressions, which declared indexes match exactly.
+
+### Added
+- **Undeclared queries are recorded.** Every list, aggregate, stream and live snapshot that no declared index serves is counted under the entry that would serve it, with total database time (internal `_ezbase_unserved` table, 14 days). Console → Indexes lists them slowest first with a Declare button; undeclared indexes have one too.
+- **`GET /api/indexes/suggested`** returns a complete `indexes.json`: declared entries, every existing btree index that queries have read (as the entry that adopts it), and every recorded undeclared shape, most used first. Declaring from the console on an instance with no file writes this file plus the new entry, so one click does not drop the indexes other collections use.
+
+### Removed
+- `DELETE /api/collections/:col/indexes/:name` (dropping a legacy GIN). Sync drops it.
+- `X-Ezbase-Index` values `built-in …` and `automatic …`. It reports `declared {...}`, `undeclared; add {...}` or `full scan`.
+
+### Upgrade considerations
+- Without `indexes.json`, nothing is dropped and nothing new is built: query shapes that relied on a not-yet-built automatic index run unindexed. Generate the file before or right after upgrading.
+- With `indexes.json`, every undeclared non-unique index on collection tables is dropped, including hand-made SQL indexes and the old timestamp indexes. Stop applying hand-made index SQL; declare those shapes instead.
+- Instances that ran with `EZBASE_AUTO_INDEX=false` lose their GIN indexes once the file exists. Queries no longer read them.
+- Full backups stream in table order instead of sorting by `created_at`.
+
+### Agent prompt
+```
+Update this project to ezbase 1.21 (image ghcr.io/ezwrld/ezbase:1.21). GET {ezbase}/api/health must report "1.21". SDK unchanged.
+
+ezbase no longer creates indexes from queries; a checked-in indexes.json is the only source of indexes, and once it is mounted every undeclared index on collection tables is dropped.
+1. After the upgrade, let normal traffic run, then fetch a starting file: curl -s -H "Authorization: Bearer $ADMIN_KEY" {ezbase}/api/indexes/suggested > ops/ezbase/indexes.json
+2. Review it against the code's real query shapes: every .where/.orderBy shape the app runs needs an entry ({ "equals": [up to 3 fields], "orderedBy": field | "created" | "updated" }). Drop entries for shapes the code no longer runs.
+3. Mount it read-only at /data/indexes.json next to rules.json, remove EZBASE_AUTO_INDEX and any hand-written CREATE INDEX SQL for ezbase tables, deploy.
+4. Verify: GET {ezbase}/api/indexes shows every entry "ready"; hot queries return X-Ezbase-Index: declared {...}; console → Indexes → "Queries without a declared index" is empty for hot shapes.
+```
+
+---
+
 ## v1.20 — 2026-11-21
 
 `.get()` reads results of any size, and images built from now on open existing data.

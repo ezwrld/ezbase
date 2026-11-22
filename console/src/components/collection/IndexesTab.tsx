@@ -1,25 +1,25 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertCircle, Loader2 } from 'lucide-react'
-import { api, ago, bytes, dbBase, num } from '@/lib/api'
+import { api, ago, bytes, dbBase, duration, num } from '@/lib/api'
 import { Notice } from './ShapesTab'
 
-type Kind = 'primary' | 'built-in' | 'declared' | 'automatic' | 'legacy'
+type Kind = 'primary' | 'unique' | 'declared' | 'undeclared'
 type Declared = { equals?: string[]; orderedBy?: string }
 type Indexes = {
   tableBytes: number
   indexBytes: number
-  indexes: { name: string; kind: Kind; fields: string[]; method: string; sizeBytes: number; reads: number; valid: boolean }[]
+  indexes: { name: string; kind: Kind; fields: string[]; method: string; sizeBytes: number; reads: number; valid: boolean; entry?: Declared }[]
   declared: (Declared & { name: string | null; built: boolean })[]
-  suggested: { index: Declared; queries: number; lastSeen: number }[]
+  suggested: { index: Declared; queries: number; totalMs: number; lastSeen: number }[]
+  managed: boolean
   writable: boolean
 }
 
 const KIND_STYLE: Record<Kind, { bg: string; fg: string }> = {
   primary: { bg: '#f4f4f5', fg: '#52525b' },
-  'built-in': { bg: '#f4f4f5', fg: '#52525b' },
+  unique: { bg: '#f4f4f5', fg: '#52525b' },
   declared: { bg: '#e0f2fe', fg: '#0369a1' },
-  automatic: { bg: '#dcfce7', fg: '#15803d' },
-  legacy: { bg: '#fef3c7', fg: '#b45309' },
+  undeclared: { bg: '#fef3c7', fg: '#b45309' },
 }
 
 const describe = (index: Declared) =>
@@ -60,6 +60,7 @@ export function IndexesTab({ database, collection }: { database: string; collect
   }, [building, load])
 
   const writeDeclared = async (next: Declared[]) => {
+    if (!data?.managed && !window.confirm('Manage every index from indexes.json? Indexes no query has read, on every collection, will be dropped.')) return false
     setBusy(true)
     setActionError(null)
     try {
@@ -85,18 +86,6 @@ export function IndexesTab({ database, collection }: { database: string; collect
   const current: Declared[] = data.declared.map(({ equals, orderedBy }) => ({ ...(equals?.length ? { equals } : {}), ...(orderedBy ? { orderedBy } : {}) }))
   const declare = (index: Declared) => writeDeclared([...current, index])
   const remove = (name: string | null) => writeDeclared(current.filter((_, i) => data.declared[i]?.name !== name))
-  const drop = async (name: string) => {
-    if (!window.confirm(`Drop ${name}?`)) return
-    setBusy(true)
-    setActionError(null)
-    try {
-      setData(await api<Indexes>(`${dbBase(database)}/collections/${encodeURIComponent(collection)}/indexes/${encodeURIComponent(name)}`, { method: 'DELETE' }))
-    } catch (e) {
-      setActionError((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
   const submitAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     const fields = equals.split(',').map((f) => f.trim()).filter(Boolean)
@@ -108,7 +97,7 @@ export function IndexesTab({ database, collection }: { database: string; collect
     }
   }
 
-  const pending = data.declared.filter((d) => !d.built)
+  const pending = data.declared.filter((d) => !data.indexes.some((i) => i.name === d.name))
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-5">
@@ -184,17 +173,17 @@ export function IndexesTab({ database, collection }: { database: string; collect
                       {index.valid ? index.kind : 'building'}
                     </span>
                   </td>
-                  <td className="py-2.5 pr-4 text-right font-mono text-[13px] tabular-nums text-zinc-700">{bytes(index.sizeBytes)}</td>
-                  <td className={`py-2.5 pr-4 text-right font-mono text-[13px] tabular-nums ${index.reads === 0 ? 'text-amber-600' : 'text-zinc-700'}`}>{num(index.reads)}</td>
+                  <td className="whitespace-nowrap py-2.5 pr-4 text-right font-mono text-[13px] tabular-nums text-zinc-700">{bytes(index.sizeBytes)}</td>
+                  <td className={`whitespace-nowrap py-2.5 pr-4 text-right font-mono text-[13px] tabular-nums ${index.reads === 0 ? 'text-amber-600' : 'text-zinc-700'}`}>{num(index.reads)}</td>
                   <td className="py-2.5 pr-4 text-right">
                     {declared && data.writable && (
                       <button type="button" disabled={busy} onClick={() => remove(declared.name)} className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50">
                         Remove
                       </button>
                     )}
-                    {index.kind === 'legacy' && (
-                      <button type="button" disabled={busy} onClick={() => drop(index.name)} className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50">
-                        Drop
+                    {index.entry && data.writable && (
+                      <button type="button" disabled={busy} onClick={() => declare(index.entry!)} className="rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50">
+                        Declare
                       </button>
                     )}
                   </td>
@@ -219,24 +208,41 @@ export function IndexesTab({ database, collection }: { database: string; collect
 
       {data.suggested.length > 0 && (
         <>
-          <h2 className="mb-2 mt-6 text-base font-semibold text-zinc-900">Suggested</h2>
+          <h2 className="mb-2 mt-6 text-base font-semibold text-zinc-900">Queries without a declared index</h2>
           <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
-            {data.suggested.map((s) => (
-              <div key={describe(s.index)} className="flex items-center gap-4 border-b border-zinc-100 px-4 py-2.5 last:border-0">
-                <span className="font-mono text-[13px] text-zinc-900">{`{ ${describe(s.index)} }`}</span>
-                <span className="text-xs text-zinc-500">
-                  {num(s.queries)} {s.queries === 1 ? 'query' : 'queries'} without an index · last {ago(s.lastSeen)} ago
-                </span>
-                <button
-                  type="button"
-                  disabled={!data.writable || busy}
-                  onClick={() => declare(s.index)}
-                  className="ml-auto rounded-md bg-sky-500 px-3 py-1 text-sm font-medium text-white hover:bg-sky-600 disabled:bg-zinc-300"
-                >
-                  Declare
-                </button>
-              </div>
-            ))}
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 bg-zinc-50 text-left text-xs text-zinc-500">
+                  <th className="py-2 pl-4 font-medium">Index to declare</th>
+                  <th className="py-2 pr-4 text-right font-medium">Queries</th>
+                  <th className="py-2 pr-4 text-right font-medium">Total time</th>
+                  <th className="py-2 pr-4 text-right font-medium">Avg</th>
+                  <th className="py-2 pr-4 text-right font-medium">Last seen</th>
+                  <th className="w-24 py-2 pr-4" />
+                </tr>
+              </thead>
+              <tbody>
+                {data.suggested.map((s) => (
+                  <tr key={describe(s.index)} className="border-b border-zinc-100 last:border-0">
+                    <td className="py-2.5 pl-4 font-mono text-[13px] text-zinc-900">{`{ ${describe(s.index)} }`}</td>
+                    <td className="py-2.5 pr-4 text-right font-mono text-[13px] tabular-nums text-zinc-700">{num(s.queries)}</td>
+                    <td className="py-2.5 pr-4 text-right font-mono text-[13px] tabular-nums text-zinc-900">{duration(s.totalMs)}</td>
+                    <td className="py-2.5 pr-4 text-right font-mono text-[13px] tabular-nums text-zinc-700">{duration(s.totalMs / s.queries)}</td>
+                    <td className="py-2.5 pr-4 text-right text-[13px] tabular-nums text-zinc-500">{ago(s.lastSeen)} ago</td>
+                    <td className="py-2.5 pr-4 text-right">
+                      <button
+                        type="button"
+                        disabled={!data.writable || busy}
+                        onClick={() => declare(s.index)}
+                        className="rounded-md bg-sky-500 px-3 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:bg-zinc-300"
+                      >
+                        Declare
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </>
       )}

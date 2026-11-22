@@ -1,8 +1,8 @@
 import type { AppliedFilter } from './rules.js'
-import { automaticIndexFor, describeIndexUse, noteUnserved, queryShape, type QueryShape } from './indexes.js'
-import { autoIndexEnabled, ensureQueryIndexes, jsonPath, qualifiedTableName, sanitizeField } from './db.js'
+import { describeIndexUse, queryShape, suggestIndex, type DeclaredIndex } from './indexes.js'
+import { jsonPath, qualifiedTableName, sanitizeField } from './db.js'
 
-export { autoIndexEnabled, sanitizeField }
+export { sanitizeField }
 
 const OPS: Record<string, string> = {
   '==': '=',
@@ -34,26 +34,10 @@ export function parseFields(value?: string): string[] | undefined {
   return Array.from(new Set(fields.map(sanitizeKey)))
 }
 
-/** Never let an untrusted query choose which persistent indexes get created. */
-export function shouldEnsureQueryIndexes(isAdmin: boolean): boolean {
-  return isAdmin && autoIndexEnabled()
-}
-
 function timestampColumn(field: string): 'created_at' | 'updated_at' | null {
   if (field === 'created') return 'created_at'
   if (field === 'updated') return 'updated_at'
   return null
-}
-
-/** `data->'a'->>'b'` — the text form used when predicates target the GIN index. */
-function jsonTextPath(field: string): string {
-  const parts = field.split('.')
-  const last = parts.pop()
-  return `data${parts.map((part) => `->'${part}'`).join('')}->>'${last}'`
-}
-
-function nested(field: string, value: unknown): Record<string, unknown> {
-  return field.split('.').reduceRight<unknown>((acc, key) => ({ [key]: acc }), value) as Record<string, unknown>
 }
 
 export type Subquery = { collection: string; where?: WhereClause[]; field?: string }
@@ -101,49 +85,6 @@ export function subqueryCollections(wheres: WhereClause[]): string[] {
   return [...names]
 }
 
-export function collectIndexHints(
-  wheres: WhereClause[],
-  orderBy?: string,
-  docFilters?: AppliedFilter[],
-  ordered = true
-) {
-  const eqFields: string[] = []
-  const jsonFields: string[] = []
-
-  const addJson = (field: string) => {
-    if (!jsonFields.includes(field)) jsonFields.push(field)
-  }
-  const addEq = (field: string) => {
-    addJson(field)
-    if (!eqFields.includes(field)) eqFields.push(field)
-  }
-
-  for (const [field, op] of wheres) {
-    if (timestampColumn(field)) continue
-    const name = sanitizeField(field)
-    if (op === '==') addEq(name)
-    else addJson(name)
-  }
-
-  if (docFilters) {
-    for (const f of docFilters) {
-      addEq(sanitizeField(f.field))
-    }
-  }
-
-  let orderField: string | null = null
-  if (!ordered) {
-    orderField = null
-  } else if (orderBy) {
-    orderField = timestampColumn(orderBy) ?? sanitizeField(orderBy)
-    if (!timestampColumn(orderBy)) addJson(orderField)
-  } else {
-    orderField = 'created_at'
-  }
-
-  return { eqFields, jsonFields, orderField }
-}
-
 function jsonbParam(params: unknown[], value: unknown): string {
   params.push(value)
   let cast = 'text'
@@ -152,26 +93,17 @@ function jsonbParam(params: unknown[], value: unknown): string {
   return `to_jsonb($${params.length}::${cast})`
 }
 
-function equality(params: unknown[], field: string, value: unknown, negate: boolean, useJsonb: boolean): string {
-  if (useJsonb) {
-    return `${jsonPath(field)} ${negate ? 'IS DISTINCT FROM' : '='} ${jsonbParam(params, value)}`
-  }
-  params.push(JSON.stringify(nested(field, value)))
-  const pred = `data @> ($${params.length}::text)::jsonb`
-  return negate ? `NOT ${pred}` : pred
+function equality(params: unknown[], field: string, value: unknown, negate: boolean): string {
+  return `${jsonPath(field)} ${negate ? 'IS DISTINCT FROM' : '='} ${jsonbParam(params, value)}`
 }
 
-function inValues(params: unknown[], field: string, values: unknown[], useJsonb: boolean): string {
+function inValues(params: unknown[], field: string, values: unknown[]): string {
   if (values.length > MAX_IN_VALUES) throw new Error(`in accepts at most ${MAX_IN_VALUES} values`)
   if (values.length === 0) return 'false'
   for (const value of values) {
     if (value === null || typeof value === 'object') throw new Error('in values must be strings, numbers or booleans')
   }
-  if (useJsonb) {
-    return `${jsonPath(field)} IN (${values.map((value) => jsonbParam(params, value)).join(', ')})`
-  }
-  params.push(values.map(String))
-  return `${jsonTextPath(field)} = ANY($${params.length})`
+  return `${jsonPath(field)} IN (${values.map((value) => jsonbParam(params, value)).join(', ')})`
 }
 
 function inSubquery(
@@ -188,33 +120,23 @@ function inSubquery(
   const inner = wherePredicates(sub.where, access.filters, params, { ...ctx, subqueries: undefined })
   const table = qualifiedTableName(ctx.database, sub.collection)
   const filter = inner.length ? ` WHERE ${inner.join(' AND ')}` : ''
-  if (ctx.useJsonb) {
-    const selected = sub.field === 'id' ? 'to_jsonb(id)' : jsonPath(sub.field)
-    return `${jsonPath(field)} = ANY(ARRAY(SELECT ${selected} FROM ${table}${filter}))`
-  }
-  const selected = sub.field === 'id' ? 'id' : jsonTextPath(sub.field)
-  return `${jsonTextPath(field)} = ANY(ARRAY(SELECT ${selected} FROM ${table}${filter}))`
+  const selected = sub.field === 'id' ? 'to_jsonb(id)' : jsonPath(sub.field)
+  return `${jsonPath(field)} = ANY(ARRAY(SELECT ${selected} FROM ${table}${filter}))`
 }
 
 type WhereContext = {
   database: string
-  useJsonb: boolean
   subqueries?: SubqueryAccess
 }
 
-function docFilterPredicates(params: unknown[], docFilters: AppliedFilter[] | undefined, useJsonb: boolean): string[] {
+function docFilterPredicates(params: unknown[], docFilters: AppliedFilter[] | undefined): string[] {
   const predicates: string[] = []
   for (const f of docFilters ?? []) {
     const field = sanitizeField(f.field)
     if (f.values) {
-      if (useJsonb) {
-        predicates.push(`${jsonPath(field)} IN (${f.values.map((value) => jsonbParam(params, value)).join(', ')})`)
-      } else {
-        params.push(f.values)
-        predicates.push(`${jsonTextPath(field)} = ANY($${params.length})`)
-      }
+      predicates.push(`${jsonPath(field)} IN (${f.values.map((value) => jsonbParam(params, value)).join(', ')})`)
     } else if (f.value !== null) {
-      predicates.push(equality(params, field, f.value, false, useJsonb))
+      predicates.push(equality(params, field, f.value, false))
     }
   }
   return predicates
@@ -226,7 +148,7 @@ function wherePredicates(
   params: unknown[],
   ctx: WhereContext
 ): string[] {
-  const predicates = docFilterPredicates(params, docFilters, ctx.useJsonb)
+  const predicates = docFilterPredicates(params, docFilters)
 
   for (const [field, op, value] of wheres) {
     const colName = timestampColumn(field)
@@ -240,29 +162,21 @@ function wherePredicates(
     const path = sanitizeField(field)
 
     if (op === 'in') {
-      if (Array.isArray(value)) predicates.push(inValues(params, path, value, ctx.useJsonb))
+      if (Array.isArray(value)) predicates.push(inValues(params, path, value))
       else if (isSubquery(value)) predicates.push(inSubquery(params, path, value, ctx))
       else throw new Error('in requires an array or a subquery')
       continue
     }
 
     if (op === '==' || op === '!=' || typeof value === 'boolean') {
-      predicates.push(equality(params, path, value, op === '!=', ctx.useJsonb))
+      predicates.push(equality(params, path, value, op === '!='))
       continue
     }
 
     const sqlOp = OPS[op]
     params.push(value)
     const idx = params.length
-    if (typeof value === 'number') {
-      predicates.push(ctx.useJsonb
-        ? `${jsonPath(path)} ${sqlOp} to_jsonb($${idx}::numeric)`
-        : `(${jsonTextPath(path)})::numeric ${sqlOp} $${idx}`)
-    } else {
-      predicates.push(ctx.useJsonb
-        ? `${jsonPath(path)} ${sqlOp} to_jsonb($${idx}::text)`
-        : `${jsonTextPath(path)} ${sqlOp} $${idx}`)
-    }
+    predicates.push(`${jsonPath(path)} ${sqlOp} to_jsonb($${idx}::${typeof value === 'number' ? 'numeric' : 'text'})`)
   }
 
   return predicates
@@ -330,18 +244,11 @@ export function buildQuerySql(
   docFilters?: AppliedFilter[],
   offsetParam?: string,
   fields?: string[],
-  isAdmin = false,
-  useJsonbPredicates = autoIndexEnabled(),
   subqueries?: SubqueryAccess,
   uncapped = false
 ): { query: string; params: unknown[]; cap: number | null; stream: boolean } {
-  void isAdmin
   const params: unknown[] = []
-  const predicates = wherePredicates(parseWhere(whereParam), docFilters, params, {
-    database,
-    useJsonb: useJsonbPredicates,
-    subqueries,
-  })
+  const predicates = wherePredicates(parseWhere(whereParam), docFilters, params, { database, subqueries })
 
   let query = `SELECT ${selectClause(fields)} FROM ${qualifiedTableName(database, collection)} WHERE ${predicates.length ? predicates.join(' AND ') : 'true'}`
 
@@ -360,36 +267,16 @@ export function buildQuerySql(
   return { query, params, cap: cap.strict ? cap.rows : null, stream: cap.rows === null || cap.rows > MAX_LIMIT }
 }
 
-async function ensureWhereIndexes(
-  database: string,
-  wheres: WhereClause[],
-  collection: string,
-  orderBy: string | undefined,
-  docFilters: AppliedFilter[] | undefined,
-  subqueries: SubqueryAccess | undefined,
-  ordered: boolean
-) {
-  await ensureQueryIndexes(database, collection, collectIndexHints(wheres, orderBy, docFilters, ordered))
-  for (const [, op, value] of wheres) {
-    if (op !== 'in' || !isSubquery(value)) continue
-    const sub = parseSubquery(value)
-    const access = subqueries?.get(sub.collection)
-    if (!access?.exists) continue
-    await ensureQueryIndexes(database, sub.collection, collectIndexHints(sub.where, undefined, access.filters, false))
-  }
+/** Which declared index serves a query, and the indexes.json entry that would serve it when none does. */
+export type IndexUse = { index: string; unserved: DeclaredIndex | null }
+
+function indexUse(collection: string, ...shapeArgs: Parameters<typeof queryShape>): IndexUse {
+  const shape = queryShape(...shapeArgs)
+  const index = describeIndexUse(collection, shape)
+  return { index, unserved: index.startsWith('undeclared') ? suggestIndex(shape) : null }
 }
 
-/** What serves this shape: a declared or built-in index, the automatic one already built, or nothing yet (remembered as a suggestion). */
-async function indexLabel(database: string, collection: string, shape: QueryShape): Promise<string> {
-  const described = describeIndexUse(collection, shape)
-  if (!described.startsWith('undeclared')) return described
-  const automatic = await automaticIndexFor(database, collection, shape)
-  if (automatic) return `automatic ${automatic}`
-  noteUnserved(database, collection, shape)
-  return described
-}
-
-export async function prepareQuery(
+export function prepareQuery(
   database: string,
   collection: string,
   whereParam?: string,
@@ -399,30 +286,13 @@ export async function prepareQuery(
   docFilters?: AppliedFilter[],
   offsetParam?: string,
   fields?: string[],
-  isAdmin = false,
   subqueries?: SubqueryAccess,
   uncapped = false
-): Promise<{ query: string; params: unknown[]; index: string; cap: number | null; stream: boolean }> {
-  const useJsonb = autoIndexEnabled()
-  const index = await indexLabel(database, collection, queryShape(parseWhere(whereParam), docFilters, orderBy, 'created'))
-  if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
-    await ensureWhereIndexes(database, parseWhere(whereParam), collection, orderBy, docFilters, subqueries, true)
+): IndexUse & { query: string; params: unknown[]; cap: number | null; stream: boolean } {
+  return {
+    ...indexUse(collection, parseWhere(whereParam), docFilters, orderBy, 'created'),
+    ...buildQuerySql(database, collection, whereParam, orderBy, order, limitParam, docFilters, offsetParam, fields, subqueries, uncapped),
   }
-  return { index, ...buildQuerySql(
-    database,
-    collection,
-    whereParam,
-    orderBy,
-    order,
-    limitParam,
-    docFilters,
-    offsetParam,
-    fields,
-    isAdmin,
-    useJsonb,
-    subqueries,
-    uncapped
-  ) }
 }
 
 // ── Aggregation ──────────────────────────────────────────────
@@ -491,7 +361,6 @@ export function buildAggregateSql(
   collection: string,
   req: AggregateRequest,
   docFilters?: AppliedFilter[],
-  useJsonbPredicates = autoIndexEnabled(),
   subqueries?: SubqueryAccess,
   uncapped = false
 ): { query: string; params: unknown[]; cap: number | null } {
@@ -504,11 +373,7 @@ export function buildAggregateSql(
     ...outputs.map(({ name, expr }) => `${expr} AS "${name}"`),
   ]
 
-  const predicates = wherePredicates(req.where ?? [], docFilters, params, {
-    database,
-    useJsonb: useJsonbPredicates,
-    subqueries,
-  })
+  const predicates = wherePredicates(req.where ?? [], docFilters, params, { database, subqueries })
   let query = `SELECT ${columns.join(', ')} FROM ${qualifiedTableName(database, collection)} WHERE ${predicates.length ? predicates.join(' AND ') : 'true'}`
   if (groupBy.length) query += ` GROUP BY ${groupBy.map((_, i) => i + 1).join(', ')}`
 
@@ -538,19 +403,18 @@ export function buildAggregateSql(
   return { query, params, cap: cap.strict ? cap.rows : null }
 }
 
-export async function prepareAggregate(
+export function prepareAggregate(
   database: string,
   collection: string,
   req: AggregateRequest,
   docFilters?: AppliedFilter[],
   isAdmin = false,
   subqueries?: SubqueryAccess
-): Promise<{ query: string; params: unknown[]; index: string; cap: number | null }> {
-  const index = await indexLabel(database, collection, queryShape(req.where ?? [], docFilters, undefined, null))
-  if (shouldEnsureQueryIndexes(isAdmin) && !index.startsWith('declared')) {
-    await ensureWhereIndexes(database, req.where ?? [], collection, undefined, docFilters, subqueries, false)
+): IndexUse & { query: string; params: unknown[]; cap: number | null } {
+  return {
+    ...indexUse(collection, req.where ?? [], docFilters, undefined, null),
+    ...buildAggregateSql(database, collection, req, docFilters, subqueries, isAdmin),
   }
-  return { index, ...buildAggregateSql(database, collection, req, docFilters, autoIndexEnabled(), subqueries, isAdmin) }
 }
 
 type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] }

@@ -26,7 +26,7 @@ Fleet data decides 5 and 6: an instance whose data size, request rate, or averag
 | `rules.json`, `indexes.json`, `auth.json` | files + `fs.watch` | no — a second replica would not see console edits |
 | Realtime | Postgres LISTEN/NOTIFY | yes — every replica listens to the same Postgres |
 | Analytics | `ON CONFLICT … count = count + EXCLUDED.count` | yes — additive across replicas |
-| Automatic index builds | each process may start one | needs a Postgres advisory lock so one replica builds |
+| indexes.json sync | every process builds and drops to match the file | needs a Postgres advisory lock so one replica syncs |
 
 ## Scaling stages
 
@@ -35,7 +35,7 @@ Fleet data decides 5 and 6: an instance whose data size, request rate, or averag
    - Image skips its bundled Postgres when `DATABASE_URL` is set.
    - S3-compatible files backend (R2, B2, MinIO).
    - Rules, indexes, and auth settings stored in Postgres; a mounted file stays an override for GitOps.
-   - Advisory lock around index builds.
+   - Advisory lock around the indexes.json sync.
    - N stateless server replicas behind a load balancer. SSE keeps working unchanged.
 3. **Read scale.** Read replica for list and `.aggregate()` traffic, PgBouncer, `_ezbase_metrics` off the primary.
 4. **Shard by database.** Each `db_<name>` schema is already isolated and auth lives in `public`. A routing table maps database → Postgres cluster, so a write-heavy database (an event firehose) gets its own hardware.

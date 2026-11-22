@@ -19,7 +19,7 @@ import {
 } from './query.js'
 import { publishChange, subscribe } from './pubsub.js'
 import { canReadCollection, checkCollectionAccess, requirePermission } from './middleware.js'
-import { collectionIndexes, declaredIndexStatus, dropLegacyIndex, writeCollectionIndexes } from './indexes.js'
+import { collectionIndexes, declaredIndexStatus, recordUnserved, suggestedIndexes, writeCollectionIndexes, type DeclaredIndex } from './indexes.js'
 import { analyzeShapes } from './shapes.js'
 import { hasExplicitCollectionRule } from './rules.js'
 import type { AppliedFilter } from './rules.js'
@@ -105,16 +105,23 @@ function docMatchesFilters(data: Record<string, unknown>, filters: AppliedFilter
   return true
 }
 
-/** Runs a query, setting X-Ezbase-Index and Server-Timing; an admin's X-Ezbase-Explain adds the real plan. */
-async function runReported(c: Context, query: string, params: unknown[], index: string, run: () => Promise<any[]>) {
-  c.header('X-Ezbase-Index', index)
+type QueryTarget = { database: string; collection: string; index: string; unserved: DeclaredIndex | null }
+
+/**
+ * Runs a query, setting X-Ezbase-Index and Server-Timing, and records its time when no
+ * declared index served it; an admin's X-Ezbase-Explain adds the real plan.
+ */
+async function runReported(c: Context, target: QueryTarget, query: string, params: unknown[], run: () => Promise<any[]>) {
+  c.header('X-Ezbase-Index', target.index)
   if ((c.get('role') || 'anonymous') === 'admin' && c.req.header('x-ezbase-explain')) {
     const [{ 'QUERY PLAN': plan }] = await sql.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON) ${query}`, params as any[])
     c.header('X-Ezbase-Plan', summarizePlan(plan[0]))
   }
   const t0 = performance.now()
   const rows = await run()
-  c.header('Server-Timing', `db;dur=${(performance.now() - t0).toFixed(1)}`)
+  const ms = performance.now() - t0
+  c.header('Server-Timing', `db;dur=${ms.toFixed(1)}`)
+  recordUnserved(target.database, target.collection, target.unserved, ms)
   return rows
 }
 
@@ -126,7 +133,8 @@ const STREAM_IDLE_MS = 60_000
  * An uncapped admin read as a JSON array, pulled from a Postgres cursor 1000 rows at a
  * time, so the server holds one batch however many documents match.
  */
-function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8Array> {
+function streamJsonArray(query: string, params: unknown[], onDone: (ms: number) => void): ReadableStream<Uint8Array> {
+  const t0 = performance.now()
   const encoder = new TextEncoder()
   const batches = (sql.unsafe(query, params as any[]) as any).cursor(1000)[Symbol.asyncIterator]() as AsyncIterator<Record<string, unknown>[]>
   let started = false
@@ -169,6 +177,7 @@ function streamJsonArray(query: string, params: unknown[]): ReadableStream<Uint8
       if (done) {
         controller.enqueue(encoder.encode(']'))
         controller.close()
+        onDone(performance.now() - t0)
         return
       }
       let chunk = ''
@@ -309,7 +318,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
 
     const snapshot = async (): Promise<{ docs: ReturnType<typeof formatDoc>[] } | { error: string }> => {
       if (!(await collectionExists(database, collection))) return { docs: [] }
-      const { query, params, cap } = await prepareQuery(
+      const { query, params, cap, unserved } = prepareQuery(
         database,
         collection,
         whereParam,
@@ -319,10 +328,11 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         docFilters,
         offsetParam,
         fields,
-        (c.get('role') || 'anonymous') === 'admin',
         subqueries
       )
+      const t0 = performance.now()
       const rows = await sql.unsafe(query, params as any[])
+      recordUnserved(database, collection, unserved, performance.now() - t0)
       const truncated = truncationError(rows.length, cap)
       return truncated ? { error: truncated } : { docs: rows.map(formatDoc) }
     }
@@ -366,19 +376,6 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     const collection = c.req.param('collection')
     const database = getDatabase(c)
     if (!(await collectionExists(database, collection))) return c.json({ error: 'Collection not found' }, 404)
-    return c.json(await collectionIndexes(database, collection))
-  })
-
-  app.delete('/collections/:collection/indexes/:name', async (c) => {
-    if ((c.get('role') || 'anonymous') !== 'admin') return c.json({ error: 'Forbidden' }, c.get('role') ? 403 : 401)
-    const collection = c.req.param('collection')
-    const database = getDatabase(c)
-    if (!(await collectionExists(database, collection))) return c.json({ error: 'Collection not found' }, 404)
-    try {
-      await dropLegacyIndex(database, collection, c.req.param('name'))
-    } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : 'Drop failed' }, 400)
-    }
     return c.json(await collectionIndexes(database, collection))
   })
 
@@ -478,12 +475,13 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     let query: string
     let params: unknown[]
     let index: string
+    let unserved: DeclaredIndex | null
     let cap: number | null
     let stream: boolean
     try {
       const resolved = await resolveSubqueries(c, database, parseWhere(c.req.query('where')))
       if (!resolved.ok) return resolved.response
-      ;({ query, params, index, cap, stream } = await prepareQuery(
+      ;({ query, params, index, unserved, cap, stream } = prepareQuery(
         database,
         collection,
         c.req.query('where'),
@@ -493,7 +491,6 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
         docFilters,
         c.req.query('offset'),
         parseFields(c.req.query('fields')),
-        isAdmin,
         resolved.subqueries,
         isAdmin
       ))
@@ -503,9 +500,9 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     if (stream) {
       c.header('X-Ezbase-Index', index)
       c.header('Content-Type', 'application/json; charset=utf-8')
-      return c.body(streamJsonArray(query, params))
+      return c.body(streamJsonArray(query, params, (ms) => recordUnserved(database, collection, unserved, ms)))
     }
-    const rows = await runReported(c, query, params, index, () => sql.unsafe(query, params as any[]))
+    const rows = await runReported(c, { database, collection, index, unserved }, query, params, () => sql.unsafe(query, params as any[]))
     const truncated = truncationError(rows.length, cap)
     if (truncated) return c.json({ error: truncated }, 400)
     return c.json(rows.map(formatDoc))
@@ -523,13 +520,14 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
     let params: unknown[]
     let groupBy: string[]
     let index: string
+    let unserved: DeclaredIndex | null
     let cap: number | null
     try {
       const req = parseAggregate(parsed.body)
       groupBy = req.groupBy ?? []
       const resolved = await resolveSubqueries(c, database, req.where ?? [])
       if (!resolved.ok) return resolved.response
-      ;({ query, params, index, cap } = await prepareAggregate(
+      ;({ query, params, index, unserved, cap } = prepareAggregate(
         database,
         collection,
         req,
@@ -541,7 +539,7 @@ function collectionRoutes(getDatabase: (c: Context) => string) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid aggregate' }, 400)
     }
     try {
-      const rows = await runReported(c, query, params, index, () => sql.begin(async (tx) => {
+      const rows = await runReported(c, { database, collection, index, unserved }, query, params, () => sql.begin(async (tx) => {
         await tx.unsafe(`SET LOCAL statement_timeout = ${AGGREGATE_TIMEOUT_MS}`)
         return tx.unsafe(query, params as any[])
       }))
@@ -750,7 +748,13 @@ adminRoutes.get('/indexes', async (c) => {
   return c.json(await declaredIndexStatus())
 })
 
-// List databases
+// A complete indexes.json to start from: declared entries, existing indexes queries read, unserved shapes
+adminRoutes.get('/indexes/suggested', async (c) => {
+  const role = c.get('role') || 'anonymous'
+  if (role !== 'admin') return c.json({ error: role === 'anonymous' ? 'Unauthorized' : 'Forbidden' }, role === 'anonymous' ? 401 : 403)
+  return c.json(await suggestedIndexes())
+})
+
 // Replace one collection's declared indexes in indexes.json (409 when the file is mounted read-only)
 adminRoutes.put('/indexes/collections/:collection', async (c) => {
   const role = c.get('role') || 'anonymous'
@@ -758,7 +762,7 @@ adminRoutes.put('/indexes/collections/:collection', async (c) => {
   const body = await c.req.json().catch(() => null) as { indexes?: unknown } | null
   if (!body || !Array.isArray(body.indexes)) return c.json({ error: 'Body must be { "indexes": [...] }' }, 400)
   try {
-    return c.json(writeCollectionIndexes(c.req.param('collection'), body.indexes as any))
+    return c.json(await writeCollectionIndexes(c.req.param('collection'), body.indexes as any))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Write failed'
     return c.json({ error: message }, /read-only/.test(message) ? 409 : 400)

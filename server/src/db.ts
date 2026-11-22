@@ -21,19 +21,11 @@ const ensuredDatabases = new Set<string>()
 // losers of that race get a catalog duplicate-key error (e.g. 23505 on pg_type).
 const pendingDatabases = new Map<string, Promise<void>>()
 const pendingCollections = new Map<string, Promise<void>>()
-const jsonIndexes = new Set<string>()
-const pendingJsonIndexes = new Map<string, Promise<void>>()
 const collectionCreatedHooks: Array<(database: string, collection: string) => void> = []
 
 /** Runs after ensureCollection creates a table, e.g. to apply declared indexes. */
 export function onCollectionCreated(hook: (database: string, collection: string) => void) {
   collectionCreatedHooks.push(hook)
-}
-
-export type QueryIndexHints = {
-  eqFields: string[]
-  jsonFields: string[]
-  orderField: string | null
 }
 
 const IDENT_RE = /^[a-z][a-z0-9_]*$/
@@ -46,15 +38,6 @@ export function sqlIndexName(database: string, collection: string, kind: string,
     .digest('hex')
     .slice(0, 16)
   return `idx_${h}`
-}
-
-/**
- * On (the default): queries compare `data->'field'` expressions that admin
- * queries index with btrees, and collections get no GIN index — nothing would
- * read it. Off: queries use `@>` containment against a GIN index on `data`.
- */
-export function autoIndexEnabled(): boolean {
-  return process.env.EZBASE_AUTO_INDEX !== 'false'
 }
 
 function isDuplicateDdlError(err: unknown): boolean {
@@ -211,11 +194,6 @@ export async function ensureCollection(database: string, name: string) {
           updated_at BIGINT NOT NULL
         )
       `
-      if (!autoIndexEnabled()) {
-        await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_data`)} ON ${table} USING GIN (data jsonb_path_ops)`
-      }
-      await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_created`)} ON ${table} (created_at)`
-      await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${name}_updated`)} ON ${table} (updated_at)`
 
       ensured.add(cacheKey)
       for (const hook of collectionCreatedHooks) hook(database, name)
@@ -278,51 +256,19 @@ export function clearDatabaseCaches(database: string) {
       ensured.delete(key)
     }
   }
-  for (const key of [...jsonIndexes]) {
-    if (key.includes(`_${database}_`) || key.startsWith(`idx_${database}_`)) {
-      jsonIndexes.delete(key)
-    }
-  }
 }
 
 function jsonExpr(field: string): string {
   return `(${jsonPath(field)})`
 }
 
-/**
- * Builds in the background with CONCURRENTLY so a new query shape never blocks
- * writes to a live table; the triggering query runs without waiting. ANALYZE
- * afterwards gives the planner statistics for the new expression.
- */
-function createIndexOnce(name: string, database: string, table: string, columns: string, partial: string | null) {
-  if (jsonIndexes.has(name) || pendingJsonIndexes.has(name)) return
-  const pending = (async () => {
-    try {
-      await withDdlRetry(async () => {
-        const t0 = Date.now()
-        await sql.unsafe(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${table} (${columns})${partial ? ` WHERE ${partial}` : ''}`)
-        await sql.unsafe(`ANALYZE ${table}`)
-        const ms = Date.now() - t0
-        if (ms >= 100) console.log(`  created index ${name} in ${ms}ms`)
-      })
-    } catch (err) {
-      console.error(`failed to create index ${name}:`, err)
-      // A failed concurrent build leaves an invalid index that IF NOT EXISTS would keep forever.
-      await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS ${schemaName(database)}.${name}`).catch(() => {})
-    } finally {
-      jsonIndexes.add(name)
-    }
-  })().finally(() => pendingJsonIndexes.delete(name))
-  pendingJsonIndexes.set(name, pending)
-}
-
 export type IndexDefinition = { name: string; columns: string; partial: string | null }
 
 /**
- * The one place an index shape becomes DDL. Automatic and declared indexes both
- * go through it, so a declared shape that the auto-indexer already built has the
- * same name and definition and is adopted instead of rebuilt. `order` is a JSON
- * field or the created_at/updated_at column; null for equality-only shapes.
+ * The one place an index shape becomes DDL. Names match what earlier versions
+ * built per query shape (and per timestamp column), so declaring a shape that
+ * already has an index adopts it instead of rebuilding. `order` is a JSON field
+ * or the created_at/updated_at column; null for equality-only shapes.
  */
 export function indexDefinition(
   database: string,
@@ -333,7 +279,8 @@ export function indexDefinition(
   const eq = equals.slice(0, 3)
   const column = order === 'created_at' || order === 'updated_at'
   if (eq.length === 0) {
-    if (!order || column) return null
+    if (!order) return null
+    if (column) return { name: `idx_${database}_${collection}_${order.slice(0, -3)}`.slice(0, 63), columns: order, partial: null }
     return { name: sqlIndexName(database, collection, 'o', [order]), columns: jsonExpr(order), partial: null }
   }
   const partial = `${jsonExpr(eq[0])} IS NOT NULL`
@@ -349,69 +296,10 @@ export function indexDefinition(
   }
 }
 
-/**
- * Firestore-style: one index per query shape. Equality filters + orderBy get a
- * composite so `where status==pending orderBy observedAt limit 25` is an index
- * scan instead of GIN + sort; unordered reads (aggregates, subqueries) with two
- * or more equality filters get a composite of those. Fields the composite does
- * not cover (ranges, `in`, a lone equality) get a single-field btree. Fields a
- * composite covers get no single index of their own, which keeps hot tables
- * from collecting an index per field per shape.
- */
-export async function ensureQueryIndexes(
-  database: string,
-  collection: string,
-  hints: QueryIndexHints
-) {
-  const err = validateCollectionName(collection) || validateDatabaseName(database)
-  if (err) throw new Error(err)
-
-  await ensureCollection(database, collection)
-  const table = qualifiedTableName(database, collection)
-
-  const covered = new Set<string>()
-  const eq = hints.eqFields.slice(0, 3)
-  const orderField = hints.orderField
-  if (eq.length > 0) {
-    const composite = indexDefinition(database, collection, eq, orderField)
-    if (composite?.columns.includes(',')) {
-      createIndexOnce(composite.name, database, table, composite.columns, composite.partial)
-      eq.forEach((field) => covered.add(field))
-      if (orderField && orderField !== 'created_at' && orderField !== 'updated_at') covered.add(orderField)
-    }
-  }
-
-  for (const field of hints.jsonFields) {
-    if (covered.has(field)) continue
-    const expr = jsonExpr(field)
-    createIndexOnce(sqlIndexName(database, collection, 'j', [field]), database, table, expr, `${expr} IS NOT NULL`)
-  }
-}
-
-export async function ensureTimestampIndexes() {
-  const tables = await sql`
-    SELECT n.nspname AS schema, c.relname AS relname
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname LIKE 'db\_%' ESCAPE '\'
-      AND c.relname LIKE 'col\_%' ESCAPE '\'
-      AND c.relkind = 'r'
-  `
-  for (const row of tables) {
-    const database = String(row.schema).slice(3)
-    const collection = String(row.relname).slice(4)
-    if (validateDatabaseName(database) || validateCollectionName(collection)) continue
-    const table = qualifiedTable(database, collection)
-    await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${collection}_created`)} ON ${table} (created_at)`
-    await sql`CREATE INDEX IF NOT EXISTS ${sql(`idx_${database}_${collection}_updated`)} ON ${table} (updated_at)`
-  }
-}
-
 // ── Init ────────────────────────────────────────────────────
 export async function init() {
   // BetterAuth manages user/session tables in public schema automatically
   await ensureDatabase('default')
-  await ensureTimestampIndexes()
 
   // File storage metadata table (global, in public schema)
   await sql`
